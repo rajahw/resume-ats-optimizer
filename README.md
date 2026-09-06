@@ -50,6 +50,10 @@ Requires `python3`, `pdftotext`, `pdfinfo`, and Flatpak LibreOffice
 /resume-ats-optimizer  # with the job description pasted
 ```
 
+Pasting the posting is optional when `jd.txt` already holds one — the skill quotes back
+the posting it found and asks whether to reuse it or take a new paste, so re-running
+against the same job costs nothing. A new paste overwrites `jd.txt`.
+
 It surfaces the gaps and asks about them **before** writing anything, because a keyword
 missing from the résumé usually means it was never written down, not that the experience
 is absent. Answer the questions, and it writes the tailored `.odt` plus a report.

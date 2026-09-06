@@ -132,9 +132,25 @@ they say proceed, tailor normally and note it in the report.
    suggestion to confirm. When they reply, derive `PREFIX` per **Output
    naming**, write that one line to `.output_name`, and continue - this is asked once per
    clone. If they decline to name the files, write nothing and use the empty prefix.
-1. **Require the job description.** If none was pasted, ask and stop. Never fall back to
-   generic ATS advice.
-2. Save the JD to `jd.txt`, then run:
+1. **Require the job description.** If one was pasted with the invocation, write it to
+   `jd.txt` and continue. Otherwise check the working directory for `jd.txt` before
+   asking for anything - re-running against the posting already sitting there is common,
+   and making the user paste it a second time is the annoyance this check exists to
+   prevent.
+   - **`jd.txt` exists with content:** quote back the first line or two (whatever names
+     the role and company) and ask whether to tailor against that posting or a new one.
+     **Pause and wait.**
+   - **`jd.txt` is missing, empty, or whitespace only:** ask for the posting. **Pause and
+     wait.** Never fall back to generic ATS advice, and never tailor against a posting
+     recalled from earlier in the conversation instead of one on disk.
+   - **They paste a new posting:** write it to `jd.txt`, replacing what was there, and
+     continue against the new one.
+
+   **Pausing here is not aborting.** The reply resumes this same run at step 2 - the
+   model check, the canon check, the `shape` verdict, and `PREFIX` all still hold from
+   step 0. Nothing is re-run and the user does not re-invoke the skill. Say what is
+   needed, stop talking, and pick up where you left off when it arrives.
+2. Run, against the JD settled at step 1:
    `python3 $SCRIPT match canon_resume.odt jd.txt`
    It returns only near-miss and missing terms, and emits no score. **Early exit:** if it
    reports no actionable gaps, say so and stop - canon already covers this posting.
