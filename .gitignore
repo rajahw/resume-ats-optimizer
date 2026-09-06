@@ -1,0 +1,39 @@
+# Job description text is the employer's copyrighted content, and naming every
+# posting you apply to is not something to publish. Keep it local.
+jd.txt
+jd*.txt
+*.jd.txt
+job-description*
+postings/
+
+# NEVER commit a resume with the placeholders filled in - real name, email,
+# phone, employers. Git history is permanent; a PII leak here cannot be undone
+# by a later delete. Fill tokens in a copy that matches one of these names.
+*_filled.*
+*_final.*
+*_submitted.*
+*-filled.*
+private/
+
+# The name tailored outputs are filed under. Real name, so it stays local.
+.output_name
+
+# Canon is the user's own resume, not part of this tool. It stays local, and a
+# fresh clone is expected to arrive without one - the skill aborts and asks.
+# The preview is LibreOffice output, regenerable from canon at any time.
+canon_resume.odt
+canon_resume*.odt
+canon_resume_preview.pdf
+
+# Edit sets that built canon. They quote its bullets verbatim, so committing
+# them would publish in fragments the document canon is kept out of git to avoid.
+migration/
+
+# LibreOffice lock files and Python bytecode
+.~lock.*#
+__pycache__/
+*.pyc
+
+# Scratch renders
+/render-*/
+*.tmp
