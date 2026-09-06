@@ -144,8 +144,17 @@ they say proceed, tailor normally and note it in the report.
    phrased as a responsibility, an industry-specific sense of a word). Add what it
    missed, drop false positives. **Also scan the JD for disqualifiers.**
 4. Run `python3 $SCRIPT extract canon_resume.odt` to see editable units and their ids.
+   Also run `python3 $SCRIPT budget canon_resume.odt` to measure canon's current page
+   fill before any edits exist - this is separate from `check`'s post-edit margin line
+   at step 10, and exists so loose whitespace can be raised during consultation instead
+   of only reported after the fact.
 5. **Present the analysis** - near/missing terms and the proposed edits as before/after
    pairs, framed as what to add, remove, or reword and why. No score. Nothing on disk.
+   If step 4's `budget` run printed `NOTABLE`, mention the unused space plainly
+   alongside the keyword gaps (e.g. "canon currently has about Npt of unused space at
+   the bottom of the page"). A small body font-size nudge in their own editor is one way
+   to use it - say so as a passing suggestion only, never as something this tool does or
+   offers to automate.
 6. **Ask everything in ONE `AskUserQuestion` call**, multi-select grouped by category,
    never a series of yes/no rounds. Rank by leverage and ask only about what will change
    the edit set - the change budget means about five edits, so do not surface ten gaps.
@@ -155,6 +164,11 @@ they say proceed, tailor normally and note it in the report.
    - **Removals** (multiSelect): each candidate bullet quoted in full. An unchecked
      bullet stays. Never drop one silently.
    - **Near-miss rewording** (multiSelect): approve swaps to the JD's exact phrasing.
+   - **Page space** (multiSelect, only if step 4's `budget` run printed `NOTABLE`):
+     "There's a few lines of unused space at the bottom of the page - want to use it?"
+     Options: add a bullet from confirmed/unclaimed experience, reword an existing
+     bullet to be longer and more detailed, or leave it as-is. Nothing selected means
+     leave the whitespace alone - same never-silently-decide pattern as Removals.
    - **Suspected disqualifier** (single-select yes/no, only if one exists): kept separate
      because an unchecked box is indistinguishable from an oversight.
    - **Document type** (single-select, only if `shape` said `unrecognized`): **ask this
@@ -199,7 +213,10 @@ A gap that consultation *filled* is not a disqualifier - that is the system work
    at most 1 bullet added and 1 dropped, Skills lines and header `.mid` may gain
    confirmed terms, projects may be reordered to lead with the most relevant. Prefer
    swapping an existing term for the JD's exact phrasing over adding text - highest
-   value, lowest risk, no length change.
+   value, lowest risk, no length change. If the user opted to fill page space at step 6,
+   spend the existing bullet-add / reword-longer levers toward length instead of only
+   toward keyword swaps - this doesn't raise the budget above, it just gives a reason to
+   use it that way.
 9. `python3 $SCRIPT apply canon_resume.odt edits.json -o <PREFIX>_Resume.odt`
    Canon is never modified. Edit-set shape:
    ```json

@@ -13,6 +13,7 @@ Commands:
   match      classify job-description terms against the resume (no scoring)
   apply      apply an edit set (replace / delete / insert_after / reorder_projects)
   check      verify an output against canon: diff, voice lint, page budget, parse
+  budget     measure a single resume's current page fill (pages, bottom-margin slack)
 """
 
 import argparse
@@ -794,6 +795,42 @@ def to_pdf(odt):
     return pdf if os.path.exists(pdf) else None
 
 
+def measure_page_budget(odt_path):
+    """Render odt_path to PDF and return (pages, last_yMax, pdf_path), or
+    (None, None, None) if PDF conversion is unavailable. last_yMax is the
+    deepest bottom edge of any text box on the page, in points. The caller
+    owns pdf_path's containing directory and must clean it up."""
+    pdf = to_pdf(odt_path)
+    if not pdf:
+        return None, None, None
+    info = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
+    pages = int(re.search(r"Pages:\s+(\d+)", info).group(1))
+    bbox = subprocess.run(["pdftotext", "-bbox-layout", pdf, "-"],
+                          capture_output=True, text=True).stdout
+    ys = [float(y) for y in re.findall(r'yMax="([\d.]+)"', bbox)]
+    last = max(ys) if ys else None
+    return pages, last, pdf
+
+
+def cmd_budget(args):
+    pages, last, pdf = measure_page_budget(args.resume)
+    if pdf:
+        shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
+    if last is None:
+        print("PDF conversion unavailable; budget check skipped")
+        return
+    hard_reserve = 756 - last
+    safe_reserve = 738 - last
+    print("pages: %d" % pages)
+    print("last content yMax: %.2fpt" % last)
+    print("reserve to hard limit (756pt): %.2fpt" % hard_reserve)
+    print("reserve to safe buffer (738pt): %.2fpt" % safe_reserve)
+    if safe_reserve > 50:
+        print("\nNOTABLE: ~%.0fpt of unused space below the safe buffer - "
+              "consider using it (add a bullet, lengthen one, or a small "
+              "font-size nudge)." % safe_reserve)
+
+
 def cmd_check(args):
     canon = read_content(args.canon)
     out = read_content(args.output)
@@ -916,21 +953,15 @@ def cmd_check(args):
             warnings.append("bullet %s has more than one sentence" % uid)
 
     # page budget + parse check
-    pdf = None
+    pages, last, pdf = None, None, None
     try:
-        pdf = to_pdf(args.output)
+        pages, last, pdf = measure_page_budget(args.output)
     except Exception as e:
         warnings.append("PDF conversion unavailable (%s); page/parse checks skipped" % e)
-    if pdf:
-        info = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
-        pages = int(re.search(r"Pages:\s+(\d+)", info).group(1))
+    if pages is not None:
         if pages > 1:
             problems.append("resume is %d pages; must be 1" % pages)
-        bbox = subprocess.run(["pdftotext", "-bbox-layout", pdf, "-"],
-                              capture_output=True, text=True).stdout
-        ys = [float(y) for y in re.findall(r'yMax="([\d.]+)"', bbox)]
-        if ys:
-            last = max(ys)
+        if last is not None:
             print("\npage budget: last content yMax %.2fpt (margin 756pt)" % last)
             if last > 756:
                 problems.append("content overflows bottom margin (%.2fpt)" % last)
@@ -1011,6 +1042,8 @@ def main():
 
     p = sub.add_parser("check"); p.add_argument("canon"); p.add_argument("output")
     p.set_defaults(fn=cmd_check)
+
+    p = sub.add_parser("budget"); p.add_argument("resume"); p.set_defaults(fn=cmd_budget)
 
     args = ap.parse_args()
     args.fn(args)
