@@ -36,8 +36,9 @@ import zipfile
 RIGHT_TAB_STYLE = "PRA"          # generated automatic style carrying the right tab stop
 BULLET_STYLES = ("P8", "P11")    # paragraph styles used inside list items
 
-# Phrases that read as LLM boilerplate. "leveraged"/"leveraging" are deliberately
-# absent - canon uses them.
+# Phrases that read as generated boilerplate rather than as something a person
+# wrote. A phrase canon already uses is exempt at lint time: the user's own
+# vocabulary is in-voice by definition, however it reads here.
 BANNED_PHRASES = (
     "spearheaded", "orchestrated", "seamlessly", "robust", "cutting-edge",
     "utilized", "impactful", "key stakeholder", "best-in-class", "synerg",
@@ -359,6 +360,97 @@ def resume_text(content):
         else:
             parts.append(" ".join([u.get("left", ""), u.get("mid", ""), u.get("right", "")]))
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------- voice conventions
+#
+# The lint has no house style. Canon is the style guide: these helpers read
+# what the user's document already does, and an edit is checked for matching
+# it. Nothing below encodes how a resume ought to read.
+
+# Characters that usually arrive from a model or a rich-text paste rather than
+# from the user's own typing. One canon never uses is a failure; any other
+# unfamiliar character is a warning, since a glyph the document does not
+# otherwise contain is an ATS parsing risk either way.
+TELL_CHARS = {
+    "—": "em dash", "–": "en dash", "‒": "figure dash",
+    "―": "horizontal bar", "‘": "curly quote",
+    "’": "curly apostrophe", "“": "curly quote",
+    "”": "curly quote", "…": "ellipsis character",
+    "\u00a0": "non-breaking space", "•": "bullet glyph",
+    "●": "bullet glyph", "▪": "bullet glyph", "◦": "bullet glyph",
+    "·": "middle dot", "→": "arrow", "ﬁ": "fi ligature",
+    "ﬂ": "fl ligature",
+}
+
+# Forms a document picks one of. The lint prefers neither; it only asks that an
+# edit keep using whichever one canon already settled on.
+INTERCHANGEABLE = (
+    ("apostrophe", "'", "’"),
+    ("double quote", '"', "“”"),
+)
+
+SENTENCE_END_RE = re.compile(r"[.!?](?:\s|$)")
+
+
+def sentence_count(text):
+    return len(SENTENCE_END_RE.findall(text))
+
+
+def plain(text):
+    """Entities `unesc` leaves alone, so lint compares real characters.
+
+    An editor may write an apostrophe or a quote either literally or as an
+    entity. Text arriving from an edit set is always literal, so canon has to
+    be read the same way or its own punctuation is invisible to the lint.
+    """
+    return text.replace("&apos;", "'").replace("&quot;", '"')
+
+
+def bullet_prose(content):
+    """Bullet text only - the prose an edit is measured against.
+
+    Headers and dates are excluded deliberately: a date range may use an en
+    dash in a document whose prose never does.
+    """
+    return [plain(u["text"]) for u in extract_units(content)
+            if u["kind"] == "bullet"]
+
+
+def canon_conventions(canon):
+    """The punctuation habits canon's own prose settled on.
+
+    Where canon shows no preference between two forms, neither does the lint.
+    """
+    prose = "\n".join(bullet_prose(canon))
+    conv = {"chars": set(prose), "forms": {}}
+    for name, a, b in INTERCHANGEABLE:
+        na = sum(prose.count(c) for c in a)
+        nb = sum(prose.count(c) for c in b)
+        if na and not nb:
+            conv["forms"][name] = (a, b)
+        elif nb and not na:
+            conv["forms"][name] = (b, a)
+    return conv
+
+
+def lint_prose(text, conv):
+    """Check one changed bullet against canon's conventions."""
+    problems, warnings = [], []
+    reported = set()
+    for name, (keep, avoid) in sorted(conv["forms"].items()):
+        if any(c in text for c in avoid):
+            problems.append("%s differs from canon, which uses %r: %s"
+                            % (name, keep[0], text[:60]))
+            reported.update(avoid)
+    for ch in sorted(set(text) - conv["chars"] - reported):
+        if ch in TELL_CHARS:
+            problems.append("%s does not appear in canon's prose: %s"
+                            % (TELL_CHARS[ch], text[:60]))
+        elif not ch.isascii():
+            warnings.append("character %r is not used anywhere in canon's prose; "
+                            "unusual glyphs parse unevenly: %s" % (ch, text[:60]))
+    return problems, warnings
 
 
 # ---------------------------------------------------------------- shape
@@ -845,12 +937,17 @@ TOKEN_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9]*\]")
 FILLED_SUFFIXES = ("_filled", "-filled")
 
 
-def read_pii_map(path):
+def read_pii_map(path, apostrophe=None):
     """Parse `[Token] = Value` lines into a dict.
 
     Nothing about the token set is hardcoded: whatever the file declares is
     what gets replaced. Values are never printed, logged, or returned to a
     caller that prints - only token names and counts leave this module.
+
+    `apostrophe`, when the document has a settled one, normalizes the values to
+    it. A map is typed by hand in a plain-text editor, so an apostrophe in a
+    name would otherwise be whatever that editor produced rather than what the
+    rest of the document uses.
     """
     if not os.path.exists(path):
         sys.exit(
@@ -876,9 +973,9 @@ def read_pii_map(path):
             if not value:
                 sys.exit("fill: %s line %d: %s has an empty value"
                          % (path, lineno, key))
-            # Canon uses curly apostrophes throughout; a straight one typed
-            # into the map would be the only one in the document.
-            mapping[key] = value.replace("'", "’")
+            if apostrophe:
+                value = value.replace("'", apostrophe).replace("’", apostrophe)
+            mapping[key] = value
 
     if not mapping:
         sys.exit("fill: %s has no mappings" % path)
@@ -895,8 +992,9 @@ def cmd_fill(args):
             "gitignored path. Name it *_filled.odt or put it under private/."
             % args.output)
 
-    mapping = read_pii_map(args.map)
     content = read_content(args.resume)
+    apostrophe = canon_conventions(content)["forms"].get("apostrophe", (None,))[0]
+    mapping = read_pii_map(args.map, apostrophe=apostrophe)
     body_start = content.find("<office:body>")
 
     problems, warnings = [], []
@@ -1069,29 +1167,27 @@ def cmd_check(args):
             except KeyError:
                 problems.append("zip entry %s missing from output" % name)
 
-    # voice lint on changed text only
-    changed = [ou[u]["text"] for u in ou
-               if ou[u].get("kind") == "bullet"
-               and ou[u]["text"] != cu.get(u, {}).get("text")]
-    for t in changed:
-        if "—" in t:
-            problems.append("em dash in: %s" % t[:60])
-        if "–" in t:
-            problems.append("en dash in bullet prose: %s" % t[:60])
-        if "'" in t:
-            problems.append("straight apostrophe in: %s" % t[:60])
-        if '"' in t:
-            problems.append("straight quote in: %s" % t[:60])
-        for p in BANNED_PHRASES:
-            if p in t.lower():
-                problems.append("banned phrase %r in: %s" % (p, t[:60]))
+    # Voice lint on changed prose only, and against canon's own conventions
+    # rather than a house style. Bullets come from the content diff above, not
+    # from an id-keyed comparison: ids are positional, so one insert would put
+    # every later bullet through the lint as though the user had rewritten it.
+    conv = canon_conventions(canon)
+    canon_vocab = plain(resume_text(canon)).lower()
+    canon_sentences = max([sentence_count(t) for t in bullet_prose(canon)] or [1])
 
-    # one sentence per bullet
-    for uid, u in ou.items():
-        if u.get("kind") != "bullet":
-            continue
-        if len(re.findall(r"[.!?](?:\s|$)", u["text"])) > 1:
-            warnings.append("bullet %s has more than one sentence" % uid)
+    for t in [plain(b) for _, b in reworded] + [plain(t) for t in came]:
+        p, w = lint_prose(t, conv)
+        problems += p
+        warnings += w
+        for phrase in BANNED_PHRASES:
+            if phrase in t.lower() and phrase not in canon_vocab:
+                problems.append("boilerplate phrase %r in: %s" % (phrase, t[:60]))
+        # Canon decides how long a bullet runs. A document of two-sentence
+        # bullets is not improved by clipping an edit to one.
+        n = sentence_count(t)
+        if n > canon_sentences:
+            warnings.append("bullet runs %d sentences; canon's longest runs %d: %s"
+                            % (n, canon_sentences, t[:60]))
 
     # page budget + parse check
     pages, last, pdf = None, None, None
@@ -1122,7 +1218,8 @@ def cmd_check(args):
                 pos = i
         for uid, u in ou.items():
             if u.get("kind") == "bullet":
-                probe = re.sub(r"\s+", " ", u["text"])[:28]
+                # plain(): the PDF renders an apostrophe, not `&apos;`.
+                probe = re.sub(r"\s+", " ", plain(u["text"]))[:28]
                 if probe and probe not in re.sub(r"\s+", " ", flat):
                     problems.append("parse check: bullet %s text not recoverable" % uid)
         shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)

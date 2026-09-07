@@ -21,23 +21,25 @@ is empty and the outputs are plain `Resume.odt` and `ATS_Report.md`.
 
 ## Hard rules
 
-1. **Never add a Professional Summary, Objective, Profile, or About section.** Canon has
-   none and never will. Ignore generic ATS advice recommending one.
+1. **Never add a section canon does not already have**, and never remove one wholesale.
+   Generic ATS advice pushes a Professional Summary, Objective, Profile, or About block;
+   if canon carries none, it gets none. What sections a resume has is the user's call.
 2. **Never invent experience - but never assume its absence either.** Added keywords
    trace either to something canon already says, or to experience the user confirmed
    during consultation. Those are the only two sources. A gap is never silently written
    in, and never silently written off: it goes to the user as a question first.
-3. **`[Token]` placeholders are literal and immutable to you.** `[Name]`, `[City]`,
-   `[State]`, `[Email]`, `[Phone]`, `[Website]`, `[University]`, `[UniCity]`,
-   `[UniState]`, `[Company1]`, `[Company2]`. Never reword, expand, guess at, or fill
-   them; never treat one as a keyword gap. They pass through every edit untouched, and
+3. **`[Token]` placeholders are literal and immutable to you.** Canon stands in for its
+   own PII with bracketed tokens - whichever ones that particular document uses, e.g.
+   `[Name]`, `[City]`, `[Email]`, `[Phone]`, `[University]`, `[Company1]`. Never reword,
+   expand, guess at, or fill them; never treat one as a keyword gap, and never conclude
+   from a token that a fact is missing. They pass through every edit untouched, and
    canon and `<PREFIX>_Resume.odt` keep them forever. The `fill` command (step 12) is
    the only thing that ever replaces one, it does so mechanically from a file you
    cannot read, and it writes to a separate `_filled` copy.
 4. **Only what `extract` surfaces is editable** - bullets, Skills values, and header
    `.mid` (tech stack) fields. Contact block, section headings, employers, job titles,
    dates, degree, and GPA are never touched.
-5. **Match canon voice exactly** (below).
+5. **Mirror canon's own voice** (below).
 6. **Never score the resume, and never overclaim about ATS.** No match score, coverage
    percentage, rating, grade, or before/after number - not in conversation, not in the
    report, not informally ("this takes you from about half to most of the
@@ -60,41 +62,73 @@ is empty and the outputs are plain `Resume.odt` and `ATS_Report.md`.
 
 ## Voice rules
 
-Canon's voice, derived from the document itself:
+**This skill has no house style.** Canon is the style guide: whatever the user writes is
+correct, and the goal is edits indistinguishable from the text around them - not better
+writing. Derive the conventions from the units `extract` returns, every run, because the
+next canon will not write like the last one. Read for:
 
-- **Zero em dashes.** Canon contains none. The most common LLM tell.
-- Curly apostrophes only (`[Company1]’s`, never `[Company1]'s`).
-- Bullets open with a past-tense verb: *Joined, Built, Collected, Optimized, Documented,
-  Developed, Won, Recreated*.
-- **Exactly one sentence per bullet.** Not telegraphic though - canon sentences run long
-  and carry several clauses (`participating in daily stand-ups and deployments, using an
-  agile workflow, and investigating/flagging software quality issues regularly`). Match
-  that density; do not compress into punchy fragments.
-- Serial comma (`input, rendering, and sound`).
-- Results follow canon's pattern, as a clause list on the verb (`The suite reduced
-  testing time by >90%, enabled …, and simplified …`), never a tacked-on `- resulting in
-  X%` clause.
-- Literal `>` for greater-than, not "over".
-- `leveraged`/`leveraging` are fine - canon uses them. Banned: spearheaded, orchestrated,
-  seamlessly, robust, cutting-edge, utilized, impactful, key stakeholder.
+- **Sentence count and density per bullet.** Some canons run one long multi-clause
+  sentence per bullet, others run terse fragments. Match what is there; do not compress a
+  dense bullet into a punchy one or pad a terse one.
+- **Opening pattern.** Many bullets open with a past-tense verb, but not all do - a canon
+  may continue a thought across bullets by picking up the subject instead (`The suite
+  …`, `The system …`). Copy the pattern the neighboring bullets use, not a rule about
+  resumes in general.
+- **Punctuation and symbol conventions.** Apostrophe and quote style, serial comma or
+  not, `>` versus a spelled-out "over", `&`/`+` versus "and". Whichever form canon uses
+  consistently is the correct one for that document.
+- **How results attach.** A clause list hung on the verb, a trailing metric, a separate
+  sentence - follow canon rather than importing a preferred shape.
+- **Vocabulary the user actually uses.** A word already in canon is in-voice by
+  definition, however it reads to you.
+
+Style opinions belong to the user. The skill only overrides voice where prose meets ATS
+parsing, and that list is short:
+
+- **Exact JD terminology beats a synonym** - recruiter search matches strings.
+- **Plain characters only.** Ordinary letters, digits, and punctuation; no decorative
+  glyphs, ligatures, or symbol bullets, which parse unevenly.
+- **No new structure.** No added sections, headings, tables, columns, or graphics. This
+  editor parses units under `EDUCATION`, `SKILLS`, `EXPERIENCE`, and `PROJECTS`.
+
+`check` enforces the same idea mechanically on the bullets you changed, reading canon
+first and judging edits against it rather than against a fixed style:
+
+- **Punctuation forms follow canon.** Apostrophes and quotes must be whichever form
+  canon's own prose settled on - it has no preference between straight and curly, only
+  that one document uses one of them. A canon that uses neither leaves the choice open.
+- **A character canon's prose never uses is suspect.** Known model-or-paste tells (em
+  dash, ellipsis character, curly quotes in a straight-quote document, glyph bullets,
+  non-breaking space) fail; any other unfamiliar non-ASCII character warns, on the ATS
+  grounds above. A canon that already uses em dashes in its bullets keeps them.
+- **Boilerplate phrases fail** (*spearheaded, orchestrated, seamlessly, robust,
+  cutting-edge, utilized, impactful, key stakeholder, best-in-class, synerg-, delve,
+  tapestry, testament to*) **unless canon uses the word itself**, in which case it is the
+  user's vocabulary and passes.
+- **Sentence count warns against canon's longest bullet**, not against one sentence.
+
+So the lint tightens around whatever canon does. If it fires on something canon plainly
+does too, that is a bug in `scripts/odt_text.py` worth reporting - never an argument for
+rewriting the user's document to satisfy it.
 
 ## Fundamental misalignment
 
-**Default is to proceed.** Requirement lists are aspirational and a student always falls
+**Default is to proceed.** Requirement lists are aspirational and every candidate falls
 short of something. Missing preferred skills is normal and is what tailoring is for.
 Over-firing this rule talks the user out of applications they should make, which is worse
 than a wasted application.
 
 **Disqualifying** - binary facts no wording supplies: a credential not held and not
 obtainable in time (graduate degree, licensure, required certification); legal
-eligibility (clearance, citizenship, work authorization); a full-time role starting well
-before May 2028 that is not an internship or co-op; a stated hard minimum of professional
-experience far above one internship on a plainly non-entry-level posting; a different
-profession with no transferable technical basis.
+eligibility (clearance, citizenship, work authorization); a start date that lands well
+before the availability canon states (an expected graduation date, for instance) on a
+role that is not an internship or co-op; a stated hard minimum of professional experience
+far above what canon shows, on a plainly non-entry-level posting; a different profession
+with no transferable technical basis.
 
-**Not disqualifying:** missing "nice to have" items; "3+ years" boilerplate on a
-student/new-grad posting; an unfamiliar stack adjacent to something canon demonstrates;
-anything consultation might fill in.
+**Not disqualifying:** missing "nice to have" items; year-count boilerplate ("3+ years")
+on a posting otherwise aimed at canon's level; an unfamiliar stack adjacent to something
+canon demonstrates; anything consultation might fill in.
 
 **Never conclude misalignment from the resume alone** - canon is condensed and redacted,
 so you do not know whether the user holds a clearance or graduates early. Any suspected
@@ -236,8 +270,8 @@ A gap that consultation *filled* is not a disqualifier - that is the system work
 
 ### Stage 2 - apply
 
-8. **Build the edit set** within budget: at most 3 bullet rewordings (each one sentence),
-   at most 1 bullet added and 1 dropped, Skills lines and header `.mid` may gain
+8. **Build the edit set** within budget: at most 3 bullet rewordings (each at canon's own
+   bullet length), at most 1 bullet added and 1 dropped, Skills lines and header `.mid` may gain
    confirmed terms, projects may be reordered to lead with the most relevant. Prefer
    swapping an existing term for the JD's exact phrasing over adding text - highest
    value, lowest risk, no length change. If the user opted to fill page space at step 6,

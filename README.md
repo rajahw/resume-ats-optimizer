@@ -104,7 +104,8 @@ Write the real values into `pii.txt` in the repo root, one mapping per line:
 ```
 
 Blank lines and `#` comments are skipped, the value is everything after the first `=`,
-and straight apostrophes are converted to curly ones to match canon's typography. The
+and an apostrophe in a value is normalized to whichever form canon itself uses, so a name
+typed in a plain-text editor does not end up the odd one out. The
 token names are not fixed — whatever the file declares is what gets replaced, so a canon
 with different tokens just needs different keys. Every token in the document must have a
 mapping or the fill fails.
@@ -155,12 +156,19 @@ real formatting, is copied byte-for-byte. `check` asserts that.
 tab and space runs, landing ~2.8pt short of the margin. They now use a genuine right tab
 stop at the 7.5in text width, so header text can change length without breaking.
 
-**One sentence per bullet**, verbatim from the original prose. Splitting a multi-clause
-paragraph into bullets is mechanical and should stay that way: when the author's canon
-was built this way, the only wording changes in the whole conversion were two pronoun
-repairs (`This` → `The suite`, `It` → `The system`) where a split sentence had lost its
-antecedent. If you convert a résumé into this shape, hold to that bar - `check` lints
-the voice rules, but it cannot tell you that a rewrite drifted.
+**Your canon is the style guide.** The tool has no house voice and does not try to
+improve your writing: `check` reads canon's own prose and holds edits to *that* -
+whichever apostrophe and quote forms it settled on, the characters it actually uses, the
+length its bullets run. A word already in your résumé is in-voice by definition, even one
+on the boilerplate list. The only opinions that outrank yours are the ones that affect
+parsing: exact terminology from the posting, plain characters, and no invented structure.
+
+**Bullets stay verbatim where they can.** Splitting a multi-clause paragraph into bullets
+is mechanical and should stay that way: when the author's canon was built this way, the
+only wording changes in the whole conversion were two pronoun repairs (`This` → `The
+suite`, `It` → `The system`) where a split sentence had lost its antecedent. If you
+convert a résumé into this shape, hold to that bar - `check` lints against canon, but it
+cannot tell you that a rewrite drifted.
 
 **`shape` asks whether a document is a résumé, never whether it is a good one.** Since
 canon is now whatever file you dropped in, the skill checks before it starts: does the
@@ -180,5 +188,5 @@ systems do not auto-reject.
 
 What *is* verifiable is checked: `check` runs `pdftotext` — the same text-extraction step
 a parser performs — and asserts every section is recoverable in reading order, the page
-count is 1, content stays inside the bottom margin, and no em dashes or LLM boilerplate
-crept into changed prose.
+count is 1, content stays inside the bottom margin, and no punctuation, character, or
+boilerplate phrase foreign to your own résumé crept into changed prose.
