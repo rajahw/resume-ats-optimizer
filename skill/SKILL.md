@@ -29,8 +29,11 @@ is empty and the outputs are plain `Resume.odt` and `ATS_Report.md`.
    during consultation. Those are the only two sources. A gap is never silently written
    in, and never silently written off: it goes to the user as a question first.
 3. **`[Token]` placeholders are literal and immutable to you.** Canon stands in for its
-   own PII with bracketed tokens - whichever ones that particular document uses, e.g.
-   `[Name]`, `[City]`, `[Email]`, `[Phone]`, `[University]`, `[Company1]`. Never reword,
+   own PII with bracketed tokens - whichever ones that particular document uses. The
+   README suggests a schema (`[Name]`, `[City]`, `[Email]`, `[Phone]`, `[University]`,
+   `[Company1]`, ...) but it is a recommendation, not a requirement - a canon is free to
+   use a different or additional token, and `fill` checks each one against `pii.txt` by
+   what literally appears in canon, not against any fixed list. Never reword,
    expand, guess at, or fill them; never treat one as a keyword gap, and never conclude
    from a token that a fact is missing. They pass through every edit untouched, and
    canon and `<PREFIX>_Resume.odt` keep them forever. The `fill` command (step 12) is

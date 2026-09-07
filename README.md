@@ -76,10 +76,15 @@ python3 skill/scripts/odt_text.py fill    out.odt -o out_filled.odt
 ## Placeholders
 
 Optional, and only relevant if you want your tailored outputs to be committable. The
-author's canon replaces every piece of PII with a `[Token]` — `[Name]` `[City]`
-`[State]` `[Email]` `[Phone]` `[Website]` `[University]` `[UniCity]` `[UniState]`
-`[Company1]` `[Company2]` — which the skill treats as literal and never fills, so the
-tailored `.odt` comes out redacted too.
+author's canon replaces every piece of PII with a `[Token]`, using this suggested
+schema as a starting point — `[Name]` `[City]` `[State]` `[Email]` `[Phone]`
+`[Website]` `[University]` `[UniCity]` `[UniState]` `[Company1]` `[Company2]` — which
+the skill treats as literal and never fills, so the tailored `.odt` comes out redacted
+too. It's a recommendation, not a requirement: nothing is hardcoded against it, so a
+canon can use fewer tokens, extra ones, or one this list doesn't anticipate (a
+`[Company1Verbose]` for a header that spells out an employer's full name, say) —
+whatever bracketed tokens actually appear in the document are what `pii.txt` needs to
+map.
 
 A canon you drop in straight from your own résumé has real details in it instead. That
 is fine and the skill handles it — canon itself is gitignored either way — but the

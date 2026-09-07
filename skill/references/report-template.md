@@ -47,18 +47,6 @@ Requirements still unbacked after consultation. Genuinely absent, not merely unw
 
 - …
 
-## Before submitting
-
-Include this section **only if canon actually contains `[Token]` placeholders**, and
-list only the tokens that are in it. A canon the user supplied from their own resume
-usually carries real contact details already and needs no placeholder pass; listing
-tokens that are not in the document is noise.
-
-Replace every placeholder (Ctrl+F, each is unique):
-
-`[Name]` `[City]` `[State]` `[Email]` `[Phone]` `[Website]` `[University]` `[UniCity]`
-`[UniState]` `[Company1]` (2 occurrences) `[Company2]`
-
 ## Checks
 
 - Parse: all sections recovered in reading order, contact line intact
