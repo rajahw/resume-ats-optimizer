@@ -27,10 +27,13 @@ is empty and the outputs are plain `Resume.odt` and `ATS_Report.md`.
    trace either to something canon already says, or to experience the user confirmed
    during consultation. Those are the only two sources. A gap is never silently written
    in, and never silently written off: it goes to the user as a question first.
-3. **`[Token]` placeholders are literal and immutable.** `[Name]`, `[City]`, `[State]`,
-   `[Email]`, `[Phone]`, `[Website]`, `[University]`, `[UniCity]`, `[UniState]`,
-   `[Company1]`, `[Company2]`. Never reword, expand, guess at, or fill them; never treat
-   one as a keyword gap. They pass through untouched.
+3. **`[Token]` placeholders are literal and immutable to you.** `[Name]`, `[City]`,
+   `[State]`, `[Email]`, `[Phone]`, `[Website]`, `[University]`, `[UniCity]`,
+   `[UniState]`, `[Company1]`, `[Company2]`. Never reword, expand, guess at, or fill
+   them; never treat one as a keyword gap. They pass through every edit untouched, and
+   canon and `<PREFIX>_Resume.odt` keep them forever. The `fill` command (step 12) is
+   the only thing that ever replaces one, it does so mechanically from a file you
+   cannot read, and it writes to a separate `_filled` copy.
 4. **Only what `extract` surfaces is editable** - bullets, Skills values, and header
    `.mid` (tech stack) fields. Contact block, section headings, employers, job titles,
    dates, degree, and GPA are never touched.
@@ -46,6 +49,14 @@ is empty and the outputs are plain `Resume.odt` and `ATS_Report.md`.
 8. **Never tailor a document that is not a resume**, and never write one to replace it.
    `canon_resume.odt` is whatever the user put there; it is not guaranteed to be a
    resume at all (below).
+9. **Never read the identity map, and never write PII yourself.** `pii.txt` holds the
+   real name, email, phone, and employers. Do not open, cat, grep, glob, quote, echo,
+   summarize, or reconstruct it, and do not read back any `_filled` output either. A
+   PreToolUse hook enforces this and denies the call: if you are denied, that is the
+   system working as designed - relay it and stop, never hunt for another route. Never
+   type a real name, email, phone number, or employer into any file, including the
+   report, `.output_name`, and commit messages. `fill` handles all of it and tells you
+   only token names and counts.
 
 ## Voice rules
 
@@ -246,8 +257,30 @@ A gap that consultation *filled* is not a disqualifier - that is the system work
     Revise and re-run until clean. Show the new/changed bullets in your message.
 11. **Write `<PREFIX>_ATS_Report.md`**, reading
     `references/report-template.md` at this point and not before. Keep it terse - tables,
-    not prose. Report tokens are the most expensive in the run.
-12. **Offer canon write-back** if consultation surfaced something permanently true.
+    not prose. Report tokens are the most expensive in the run. The report describes the
+    tokenized resume and never contains a filled value.
+12. **Fill the placeholders.** Run it directly - do not first test whether the map
+    exists, because every route to that filename is denied to you and the command
+    reports the answer itself:
+
+    `python3 $SCRIPT fill <PREFIX>_Resume.odt -o <PREFIX>_Resume_filled.odt`
+
+    It reads `pii.txt` from the working directory, substitutes every `[Token]`, and
+    prints only token names, counts, and page geometry. Three outcomes:
+    - **`OK - no placeholders remain`** - relay the page numbers and say the filled copy
+      is the one to submit. `<PREFIX>_Resume.odt` keeps its tokens and is the copy that
+      can be committed.
+    - **`fill: pii.txt not found`** - say that the map does not exist yet, point at the
+      schema in the README, and stop. Never create it, never offer to, and never ask for
+      the values so you can write them.
+    - **`FAIL:`** - a token has no mapping, or the real values pushed the document past
+      one page. Relay the exact lines. An unmapped token means the map is incomplete and
+      nothing is written: say which token, and stop. An overflow means the file was
+      written but does not fit, so it must not be submitted as is; the fix is a bullet
+      edit back at step 8, then re-run steps 9 to 12.
+
+    Never open the filled file afterward. `fill`'s own output is the verification.
+13. **Offer canon write-back** if consultation surfaced something permanently true.
     Opt-in, asked once, never automatic.
 
 Both outputs overwrite each run; git history is the per-job archive. Always start from

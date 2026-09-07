@@ -14,6 +14,11 @@ Commands:
   apply      apply an edit set (replace / delete / insert_after / reorder_projects)
   check      verify an output against canon: diff, voice lint, page budget, parse
   budget     measure a single resume's current page fill (pages, bottom-margin slack)
+  fill       replace [Token] placeholders from a local pii.txt into a *_filled copy
+
+`fill` is the one command that handles real identity values. It reads the map
+itself and prints only token names and counts, never a value, so the command can
+be run by an agent that must not see what it substitutes.
 """
 
 import argparse
@@ -831,6 +836,142 @@ def cmd_budget(args):
               "font-size nudge)." % safe_reserve)
 
 
+# ---------------------------------------------------------------- fill
+
+TOKEN_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9]*\]")
+
+# Output shapes .gitignore covers. Filling into anything else would put real
+# identity values on a committable path.
+FILLED_SUFFIXES = ("_filled", "-filled")
+
+
+def read_pii_map(path):
+    """Parse `[Token] = Value` lines into a dict.
+
+    Nothing about the token set is hardcoded: whatever the file declares is
+    what gets replaced. Values are never printed, logged, or returned to a
+    caller that prints - only token names and counts leave this module.
+    """
+    if not os.path.exists(path):
+        sys.exit(
+            "fill: %s not found.\n"
+            "Create it in the working directory, one mapping per line:\n"
+            "    [Name] = Your Name\n"
+            "    [City] = Your City\n"
+            "It is gitignored and is never read by Claude." % path)
+
+    mapping = {}
+    with open(path, encoding="utf-8") as fh:
+        for lineno, raw in enumerate(fh, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                sys.exit("fill: %s line %d is not `[Token] = Value`" % (path, lineno))
+            key, value = line.split("=", 1)
+            key, value = key.strip(), value.strip()
+            if not TOKEN_RE.fullmatch(key):
+                sys.exit("fill: %s line %d: key %r is not a [Token]"
+                         % (path, lineno, key))
+            if not value:
+                sys.exit("fill: %s line %d: %s has an empty value"
+                         % (path, lineno, key))
+            # Canon uses curly apostrophes throughout; a straight one typed
+            # into the map would be the only one in the document.
+            mapping[key] = value.replace("'", "’")
+
+    if not mapping:
+        sys.exit("fill: %s has no mappings" % path)
+    return mapping
+
+
+def cmd_fill(args):
+    out_base = os.path.basename(args.output)
+    stem = os.path.splitext(out_base)[0]
+    in_private = "private" in os.path.normpath(args.output).split(os.sep)
+    if not (stem.endswith(FILLED_SUFFIXES) or in_private):
+        sys.exit(
+            "fill: refusing to write %s - a filled resume must land on a\n"
+            "gitignored path. Name it *_filled.odt or put it under private/."
+            % args.output)
+
+    mapping = read_pii_map(args.map)
+    content = read_content(args.resume)
+    body_start = content.find("<office:body>")
+
+    problems, warnings = [], []
+    counts = dict.fromkeys(mapping, 0)
+
+    # Which tokens need a mapping is a question about the source document, so
+    # ask it before substituting. Asking afterwards would misread a [Token]
+    # that arrived as part of a replacement value as an unfilled placeholder.
+    present = set(TOKEN_RE.findall(strip_tags(content[body_start:])))
+
+    # One pass over the body, not one pass per token: substituting in sequence
+    # would rescan text already inserted, so a value that happened to contain a
+    # [Token] would be replaced again depending on dictionary order.
+    def substitute(match):
+        token = match.group(0)
+        counts[token] += 1
+        return esc(mapping[token])
+
+    pattern = re.compile("|".join(re.escape(t) for t in mapping))
+    content = content[:body_start] + pattern.sub(substitute, content[body_start:])
+
+    for token in sorted(t for t, n in counts.items() if n == 0):
+        warnings.append("%s in %s matched nothing in the document"
+                        % (token, args.map))
+
+    for token in sorted(present - set(mapping)):
+        problems.append("no mapping for %s" % token)
+
+    filled = {t: n for t, n in counts.items() if n}
+    if filled:
+        print("filled: " + "  ".join("%s x%d" % (t, n)
+                                     for t, n in sorted(filled.items())))
+    else:
+        print("filled: (nothing)")
+
+    if not problems:
+        write_odt(args.resume, args.output, content)
+        print("wrote %s" % args.output)
+
+        # The render staging directory holds a PDF of real identity values.
+        pdf = None
+        try:
+            pages, last, pdf = measure_page_budget(args.output)
+            if last is None:
+                warnings.append("PDF conversion unavailable; page check skipped")
+            else:
+                print("\npages: %d" % pages)
+                print("last content yMax: %.2fpt" % last)
+                print("reserve to hard limit (756pt): %.2fpt" % (756 - last))
+                print("reserve to safe buffer (738pt): %.2fpt" % (738 - last))
+                if pages > 1:
+                    problems.append("filled resume is %d pages; must be 1" % pages)
+                elif last > 756:
+                    problems.append("filled content overflows bottom margin "
+                                    "(%.2fpt); real values are longer than the "
+                                    "tokens they replaced" % last)
+                elif last > 738:
+                    warnings.append("less than 0.25in reserve left (%.2fpt)" % last)
+        except Exception as e:
+            warnings.append("PDF conversion unavailable (%s); page check skipped" % e)
+        finally:
+            if pdf:
+                shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
+
+    for w in warnings:
+        print("WARN: %s" % w)
+    for p in problems:
+        print("FAIL: %s" % p)
+    if problems:
+        sys.exit(1)
+    print("\nOK - no placeholders remain")
+
+
+# ---------------------------------------------------------------- check
+
 def cmd_check(args):
     canon = read_content(args.canon)
     out = read_content(args.output)
@@ -1044,6 +1185,12 @@ def main():
     p.set_defaults(fn=cmd_check)
 
     p = sub.add_parser("budget"); p.add_argument("resume"); p.set_defaults(fn=cmd_budget)
+
+    # --map exists so the command can be exercised against a throwaway fixture.
+    # The real run omits it; a hook denies any command that names the real map.
+    p = sub.add_parser("fill"); p.add_argument("resume")
+    p.add_argument("-o", "--output", required=True)
+    p.add_argument("--map", default="pii.txt"); p.set_defaults(fn=cmd_fill)
 
     args = ap.parse_args()
     args.fn(args)

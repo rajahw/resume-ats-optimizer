@@ -8,6 +8,7 @@ commit instead. Install with: bash hooks/install.sh
 Bypass deliberately with: git commit --no-verify
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -42,6 +43,21 @@ def text_of(path):
 
 
 def main():
+    # The identity map itself, staged past .gitignore with `git add -f`. It is
+    # nothing but PII, so it never needs the resume-shape test below.
+    maps = [p for p in staged_files()
+            if re.match(r"^pii(\W|$)", os.path.basename(p), re.I)]
+    if maps:
+        sys.stderr.write(
+            "\nCOMMIT BLOCKED - the identity map is staged:\n\n")
+        for p in maps:
+            sys.stderr.write("    %s\n" % p)
+        sys.stderr.write(
+            "\nThis file is the real name/email/phone/employers in plain text.\n"
+            "It is gitignored; staging it took an explicit -f.\n\n"
+            "  - To unstage:  git restore --staged <file>\n\n")
+        return 1
+
     offenders = []
     for path in staged_files():
         if not path.endswith((".odt", ".pdf")):

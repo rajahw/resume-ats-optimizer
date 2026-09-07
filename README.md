@@ -9,11 +9,15 @@ cleanly and fits on one page.
 ```
 skill/                    the skill itself (symlinked into ~/.claude/skills/)
   SKILL.md                workflow, hard rules, voice rules
-  scripts/odt_text.py     normalize / shape / extract / match / apply / check
+  scripts/odt_text.py     normalize / shape / extract / match / apply / check / fill
   references/             report template, read only at write time
-hooks/                    pre-commit guard against committing real PII
+hooks/                    pre-commit guard against committing real PII, plus the
+                          PreToolUse hook that keeps Claude out of pii.txt
+.claude/settings.json     wires that hook up - committed, so it travels with the clone
 
 canon_resume.odt          your resume - local only, gitignored, not shipped here
+pii.txt                   real values for the [Token]s - local only, gitignored,
+                          read by `fill` and by nothing else
 canon_resume_preview.pdf  LibreOffice render of canon, regenerable, gitignored
 migration/                edit sets that built your canon, if you keep any - gitignored
 ```
@@ -66,6 +70,7 @@ python3 skill/scripts/odt_text.py match   canon_resume.odt jd.txt
 python3 skill/scripts/odt_text.py extract canon_resume.odt
 python3 skill/scripts/odt_text.py apply   canon_resume.odt edits.json -o out.odt
 python3 skill/scripts/odt_text.py check   canon_resume.odt out.odt
+python3 skill/scripts/odt_text.py fill    out.odt -o out_filled.odt
 ```
 
 ## Placeholders
@@ -74,16 +79,71 @@ Optional, and only relevant if you want your tailored outputs to be committable.
 author's canon replaces every piece of PII with a `[Token]` — `[Name]` `[City]`
 `[State]` `[Email]` `[Phone]` `[Website]` `[University]` `[UniCity]` `[UniState]`
 `[Company1]` `[Company2]` — which the skill treats as literal and never fills, so the
-tailored `.odt` comes out redacted too. Fill them with Ctrl+F before submitting; each
-is unique, so replace-all is safe.
+tailored `.odt` comes out redacted too.
 
 A canon you drop in straight from your own résumé has real details in it instead. That
 is fine and the skill handles it — canon itself is gitignored either way — but the
 tailored output then carries your PII, so keep it out of git.
 
-**Fill placeholders in a copy named `*_filled.odt`** — that pattern is gitignored, and
-a pre-commit hook blocks any résumé that has lost its placeholders. Git history is
-permanent; a PII leak cannot be undone by a later delete.
+### Filling them
+
+Write the real values into `pii.txt` in the repo root, one mapping per line:
+
+```
+[Name] = Ada Lovelace
+[City] = Springfield
+[State] = IL
+[Email] = ada@example.com
+[Phone] = 555-0100
+[Website] = example.com/ada
+[University] = Example State University
+[UniCity] = Springfield
+[UniState] = IL
+[Company1] = Initech
+[Company2] = Globex
+```
+
+Blank lines and `#` comments are skipped, the value is everything after the first `=`,
+and straight apostrophes are converted to curly ones to match canon's typography. The
+token names are not fixed — whatever the file declares is what gets replaced, so a canon
+with different tokens just needs different keys. Every token in the document must have a
+mapping or the fill fails.
+
+Then:
+
+```bash
+python3 skill/scripts/odt_text.py fill Ada_Lovelace_Resume.odt -o Ada_Lovelace_Resume_filled.odt
+```
+
+The filled copy is what you submit. The tokenized `<PREFIX>_Resume.odt` stays untouched
+and is the one that can be committed. `fill` refuses to write anywhere but a `*_filled.*`
+path or `private/`, re-renders the result to confirm the real values did not push it onto
+a second page (a real name is longer than `[Name]`), and reports any token left unmapped.
+It prints token names and counts only — never a value — so its output is safe to paste
+anywhere.
+
+`pii.txt` and `*_filled.*` are both gitignored, and the pre-commit hook blocks either one
+from being staged. Git history is permanent; a PII leak cannot be undone by a later
+delete.
+
+### Claude never sees any of it
+
+`pii.txt` is off limits to Claude, and that is enforced rather than merely asked for.
+`hooks/block-pii-access.py` runs as a `PreToolUse` hook on every tool call and denies:
+
+- any read, write, glob, or shell command that names a `pii*` file — including wildcards
+  that would sweep one up (`cat *.txt`) and indirection (`python3 -c "open('pii.txt')"`);
+- reading back a `*_filled.*` or `private/**` file, so Claude can produce a filled résumé
+  but never inspect one.
+
+Running `fill` stays allowed because the command does not name the map — the script opens
+it itself. Documentation can discuss `pii.txt` freely, since the rule tests file paths and
+commands, not file contents.
+
+The hook is wired in `.claude/settings.json`, which is committed on purpose: it is a
+security control, so it should travel with the clone rather than live in someone's local
+config. **Claude Code asks you to trust project hooks the first time it loads them** —
+approve it once, or run `/hooks` to review what it does.
 
 ## Design notes
 

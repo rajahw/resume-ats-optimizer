@@ -6,6 +6,12 @@ jd*.txt
 job-description*
 postings/
 
+# The real identity values behind canon's [Token]s, read only by `fill`. This
+# is the file the whole placeholder scheme exists to keep out of git, and a
+# PreToolUse hook blocks Claude from reading it at all.
+pii.txt
+pii*.txt
+
 # NEVER commit a resume with the placeholders filled in - real name, email,
 # phone, employers. Git history is permanent; a PII leak here cannot be undone
 # by a later delete. Fill tokens in a copy that matches one of these names.

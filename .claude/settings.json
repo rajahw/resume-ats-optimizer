@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(**/pii*)",
+      "Read(**/*_filled.*)",
+      "Read(**/*-filled.*)",
+      "Read(**/private/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/block-pii-access.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking for PII access"
+          }
+        ]
+      }
+    ]
+  }
+}
