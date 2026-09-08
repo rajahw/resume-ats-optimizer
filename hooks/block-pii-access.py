@@ -15,7 +15,9 @@ Rule A tests path-like fields and Bash command strings, deliberately NOT file
 contents: the README and SKILL.md have to be able to document pii.txt in prose
 while every route that would actually open it stays denied.
 
-Wired as a PreToolUse hook on all tools in .claude/settings.json.
+Wired as a PreToolUse hook on all tools in .claude/settings.json, launched
+through hooks/guard.sh - which locates a working Python across platforms and
+exits 2 (blocking) rather than letting a missing interpreter fail open.
 """
 
 import fnmatch

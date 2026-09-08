@@ -7,13 +7,19 @@ cleanly and fits on one page.
 ## Layout
 
 ```
-skill/                    the skill itself (symlinked into ~/.claude/skills/)
+install.sh                one-shot setup for a fresh clone; idempotent
+.claude/skills/resume-ats-optimizer/
   SKILL.md                workflow, hard rules, voice rules
-  scripts/odt_text.py     normalize / shape / extract / match / apply / check / fill
+  scripts/odt_text.py     normalize / shape / extract / match / apply / check /
+                          fill / budget / doctor
   references/             report template, read only at write time
 hooks/                    pre-commit guard against committing real PII, plus the
-                          PreToolUse hook that keeps Claude out of pii.txt
+                          PreToolUse hook that keeps Claude out of pii.txt.
+                          Both are shell shims that locate a Python interpreter
+                          and block rather than pass if they cannot find one.
 .claude/settings.json     wires that hook up - committed, so it travels with the clone
+.gitattributes            forces LF on the scripts, so a Windows clone does not
+                          rewrite the shebangs to CRLF and break them
 
 canon_resume.odt          your resume - local only, gitignored, not shipped here
 pii.txt                   real values for the [Token]s - local only, gitignored,
@@ -39,13 +45,68 @@ holds a real name and git history is permanent.
 ## Setup on a new machine
 
 ```bash
-ln -s "$PWD/skill" ~/.claude/skills/resume-ats-optimizer
-bash hooks/install.sh
+bash install.sh
 cp /path/to/your/resume.odt canon_resume.odt   # gitignored, never committed
 ```
 
-Requires `python3`, `pdftotext`, `pdfinfo`, and Flatpak LibreOffice
-(`org.libreoffice.LibreOffice`) for rendering.
+**The skill needs no installation.** It lives at
+`.claude/skills/resume-ats-optimizer/`, which Claude Code loads for anyone working in
+this directory — cloning the repo is the whole install, on every platform. That also
+scopes it correctly: canon, `jd.txt`, and the outputs are all resolved relative to this
+directory, so the skill was only ever useful from inside it.
+
+What `install.sh` does is the part a clone deliberately cannot do for you: point git at
+this repo's hooks (`core.hooksPath`, no symlink), then report which Python and which
+renderers this machine has. Git never installs hooks on clone — it will not run code
+from a repository you have only downloaded — so this stays a one-time opt-in. Re-running
+is safe. To re-check the renderers alone:
+
+```bash
+python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py doctor
+```
+
+Requires `python3`. Rendering — the step that verifies one page, the bottom
+margin, and text recoverability — additionally needs LibreOffice and poppler's
+`pdftotext` and `pdfinfo`.
+
+LibreOffice is found wherever this machine keeps it: `soffice` or `libreoffice`
+on `PATH` (any package install), then `/Applications/LibreOffice.app` on macOS
+and `C:\Program Files\LibreOffice` on Windows, then a Flatpak
+`org.libreoffice.LibreOffice`. Nothing is hardcoded to one platform.
+
+Without those, the tool still runs — `match`, `extract`, `apply`, and the voice
+lint are pure Python — but `check` and `budget` say so and skip the page and
+parse verification rather than claiming a result they did not measure.
+
+## Platform support
+
+Linux, macOS, and Windows. Nothing in the skill or the scripts is written against one
+platform, and there are no symlinks anywhere in the setup.
+
+**Windows needs Git Bash**, which ships with Git for Windows, so cloning this repo
+already implies having it. Claude Code runs hooks through Git Bash when it is present
+and falls back to PowerShell when it is not — and the guards here are `sh` scripts, so
+PowerShell cannot run them. If hooks do not fire, set
+`CLAUDE_CODE_GIT_BASH_PATH=C:\Program Files\Git\bin\bash.exe`; Claude Code only looks
+for `bash` on `PATH`, and Git's default install puts `Git\cmd` there rather than
+`Git\bin`.
+
+**`python3` is not assumed.** On Windows that name is often missing, or is the Microsoft
+Store stub that exists on `PATH` and then exits without running anything. Both guards
+are shell shims that try `python3`, `python`, and `py` in turn and *probe each one* by
+running it, so the stub is detected rather than trusted. `install.sh` reports which
+interpreter it settled on.
+
+**The guards fail closed.** A `PreToolUse` hook that exits non-zero for any reason other
+than 2 fails *open* — the tool call proceeds — so a missing interpreter would otherwise
+have silently disabled the one control keeping Claude out of `pii.txt`. When no working
+interpreter is found, `hooks/guard.sh` exits 2 and blocks the call, and the pre-commit
+shim blocks the commit. A guard that could not run is never mistaken for one that
+allowed.
+
+Poppler (`pdftotext`, `pdfinfo`) is the piece Windows makes least convenient; without
+it you keep everything except the page and parse verification, and `check` says loudly
+which parts it did not measure.
 
 ## Use
 
@@ -65,12 +126,15 @@ is absent. Answer the questions, and it writes the tailored `.odt` plus a report
 The script alone is usable without Claude:
 
 ```bash
-python3 skill/scripts/odt_text.py shape   canon_resume.odt
-python3 skill/scripts/odt_text.py match   canon_resume.odt jd.txt
-python3 skill/scripts/odt_text.py extract canon_resume.odt
-python3 skill/scripts/odt_text.py apply   canon_resume.odt edits.json -o out.odt
-python3 skill/scripts/odt_text.py check   canon_resume.odt out.odt
-python3 skill/scripts/odt_text.py fill    out.odt -o out_filled.odt
+SCRIPT=.claude/skills/resume-ats-optimizer/scripts/odt_text.py
+
+python3 $SCRIPT doctor
+python3 $SCRIPT shape   canon_resume.odt
+python3 $SCRIPT match   canon_resume.odt jd.txt
+python3 $SCRIPT extract canon_resume.odt
+python3 $SCRIPT apply   canon_resume.odt edits.json -o out.odt
+python3 $SCRIPT check   canon_resume.odt out.odt
+python3 $SCRIPT fill    out.odt -o out_filled.odt
 ```
 
 ## Placeholders
@@ -118,7 +182,7 @@ mapping or the fill fails.
 Then:
 
 ```bash
-python3 skill/scripts/odt_text.py fill Ada_Lovelace_Resume.odt -o Ada_Lovelace_Resume_filled.odt
+python3 $SCRIPT fill Ada_Lovelace_Resume.odt -o Ada_Lovelace_Resume_filled.odt
 ```
 
 The filled copy is what you submit. The tokenized `<PREFIX>_Resume.odt` stays untouched
@@ -135,7 +199,8 @@ delete.
 ### Claude never sees any of it
 
 `pii.txt` is off limits to Claude, and that is enforced rather than merely asked for.
-`hooks/block-pii-access.py` runs as a `PreToolUse` hook on every tool call and denies:
+`hooks/block-pii-access.py` runs as a `PreToolUse` hook on every tool call — launched by
+`hooks/guard.sh`, which finds a working Python or blocks the call outright — and denies:
 
 - any read, write, glob, or shell command that names a `pii*` file — including wildcards
   that would sweep one up (`cat *.txt`) and indirection (`python3 -c "open('pii.txt')"`);
@@ -194,4 +259,6 @@ systems do not auto-reject.
 What *is* verifiable is checked: `check` runs `pdftotext` — the same text-extraction step
 a parser performs — and asserts every section is recoverable in reading order, the page
 count is 1, content stays inside the bottom margin, and no punctuation, character, or
-boilerplate phrase foreign to your own résumé crept into changed prose.
+boilerplate phrase foreign to your own résumé crept into changed prose. On a machine
+without LibreOffice or poppler it says loudly that the page and parse half was skipped,
+so an `OK` never stands in for a measurement that did not happen.

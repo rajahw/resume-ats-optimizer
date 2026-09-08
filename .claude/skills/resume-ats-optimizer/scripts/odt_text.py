@@ -15,6 +15,7 @@ Commands:
   check      verify an output against canon: diff, voice lint, page budget, parse
   budget     measure a single resume's current page fill (pages, bottom-margin slack)
   fill       replace [Token] placeholders from a local pii.txt into a *_filled copy
+  doctor     report which optional renderers this machine has
 
 `fill` is the one command that handles real identity values. It reads the map
 itself and prints only token names and counts, never a value, so the command can
@@ -22,6 +23,7 @@ be run by an agent that must not see what it substitutes.
 """
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -869,25 +871,70 @@ def _reorder_projects(content, order):
 
 # ---------------------------------------------------------------- check
 
-SOFFICE = ["flatpak", "run", "--command=/app/libreoffice/program/soffice",
-           "org.libreoffice.LibreOffice"]
+# Where LibreOffice actually lives, in the order a machine is likely to have
+# it. A package install (apt, dnf, brew) puts one of the two names on PATH; the
+# macOS and Windows installers do not, so their fixed install paths are checked
+# next; Flatpak is last because it is the slowest to launch of the three.
+SOFFICE_NAMES = ("soffice", "libreoffice")
+
+SOFFICE_PATHS = (
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+)
+
+SOFFICE_FLATPAK = ["flatpak", "run",
+                   "--command=/app/libreoffice/program/soffice",
+                   "org.libreoffice.LibreOffice"]
+
+
+@functools.lru_cache(maxsize=1)
+def find_soffice():
+    """The argv prefix that runs LibreOffice on this machine, or None."""
+    for name in SOFFICE_NAMES:
+        found = shutil.which(name)
+        if found:
+            return [found]
+    for path in SOFFICE_PATHS:
+        if os.path.exists(path):
+            return [path]
+    if shutil.which("flatpak") and subprocess.run(
+            ["flatpak", "info", "org.libreoffice.LibreOffice"],
+            capture_output=True).returncode == 0:
+        return SOFFICE_FLATPAK
+    return None
+
+
+def render_unavailable_reason():
+    """Why a render could not happen, phrased for a user-facing warning."""
+    missing = [] if find_soffice() else ["LibreOffice"]
+    missing += [t for t in ("pdfinfo", "pdftotext") if not shutil.which(t)]
+    if missing:
+        return "not installed: " + ", ".join(missing)
+    return "conversion failed"
 
 
 def to_pdf(odt):
-    """Render to PDF via the Flatpak LibreOffice.
+    """Render to PDF via whatever LibreOffice this machine has, or None.
 
-    The temp dir lives under $HOME, not /tmp: Flatpak gives the app a private
-    /tmp, so anything staged there is invisible to it and the load silently
-    fails. The input is copied in for the same reason.
+    The temp dir lives under $HOME, not /tmp: a Flatpak LibreOffice gets a
+    private /tmp, so anything staged there is invisible to it and the load
+    silently fails. The input is copied in for the same reason.
     """
+    soffice = find_soffice()
+    if not soffice:
+        return None
     base = os.path.expanduser("~/.cache/odt_text")
     os.makedirs(base, exist_ok=True)
     out = tempfile.mkdtemp(prefix="render-", dir=base)
     staged = os.path.join(out, os.path.basename(odt))
     shutil.copy(odt, staged)
-    subprocess.run(
-        SOFFICE + ["--headless", "--convert-to", "pdf", "--outdir", out, staged],
-        check=True, capture_output=True, timeout=180)
+    try:
+        subprocess.run(
+            soffice + ["--headless", "--convert-to", "pdf", "--outdir", out, staged],
+            check=True, capture_output=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return None
     pdf = os.path.splitext(staged)[0] + ".pdf"
     return pdf if os.path.exists(pdf) else None
 
@@ -900,10 +947,14 @@ def measure_page_budget(odt_path):
     pdf = to_pdf(odt_path)
     if not pdf:
         return None, None, None
-    info = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
+    try:
+        info = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
+        bbox = subprocess.run(["pdftotext", "-bbox-layout", pdf, "-"],
+                              capture_output=True, text=True).stdout
+    except OSError:
+        shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
+        return None, None, None
     pages = int(re.search(r"Pages:\s+(\d+)", info).group(1))
-    bbox = subprocess.run(["pdftotext", "-bbox-layout", pdf, "-"],
-                          capture_output=True, text=True).stdout
     ys = [float(y) for y in re.findall(r'yMax="([\d.]+)"', bbox)]
     last = max(ys) if ys else None
     return pages, last, pdf
@@ -914,7 +965,8 @@ def cmd_budget(args):
     if pdf:
         shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
     if last is None:
-        print("PDF conversion unavailable; budget check skipped")
+        print("PDF conversion unavailable (%s); budget check skipped"
+              % render_unavailable_reason())
         return
     hard_reserve = 756 - last
     safe_reserve = 738 - last
@@ -1039,7 +1091,10 @@ def cmd_fill(args):
         try:
             pages, last, pdf = measure_page_budget(args.output)
             if last is None:
-                warnings.append("PDF conversion unavailable; page check skipped")
+                warnings.append("PDF conversion unavailable (%s); page check "
+                                "skipped - verify by eye that the filled resume "
+                                "still fits one page"
+                                % render_unavailable_reason())
             else:
                 print("\npages: %d" % pages)
                 print("last content yMax: %.2fpt" % last)
@@ -1054,7 +1109,9 @@ def cmd_fill(args):
                 elif last > 738:
                     warnings.append("less than 0.25in reserve left (%.2fpt)" % last)
         except Exception as e:
-            warnings.append("PDF conversion unavailable (%s); page check skipped" % e)
+            warnings.append("PDF conversion unavailable (%s); page check skipped "
+                            "- verify by eye that the filled resume still fits "
+                            "one page" % e)
         finally:
             if pdf:
                 shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
@@ -1191,11 +1248,19 @@ def cmd_check(args):
 
     # page budget + parse check
     pages, last, pdf = None, None, None
+    reason = None
     try:
         pages, last, pdf = measure_page_budget(args.output)
     except Exception as e:
-        warnings.append("PDF conversion unavailable (%s); page/parse checks skipped" % e)
-    if pages is not None:
+        reason = str(e)
+    if pages is None:
+        # Never let the page and parse gates vanish quietly: they are the
+        # verified half of what check promises.
+        warnings.append("PDF conversion unavailable (%s); page and parse checks "
+                        "SKIPPED - this run did not verify one page, bottom "
+                        "margin, or text recoverability"
+                        % (reason or render_unavailable_reason()))
+    else:
         if pages > 1:
             problems.append("resume is %d pages; must be 1" % pages)
         if last is not None:
@@ -1256,6 +1321,21 @@ def cmd_extract(args):
     print(json.dumps(units, indent=2, ensure_ascii=False))
 
 
+def cmd_doctor(args):
+    soffice = find_soffice()
+    print("LibreOffice: %s" % (" ".join(soffice) if soffice else "NOT FOUND"))
+    for tool in ("pdftotext", "pdfinfo"):
+        print("%-12s %s" % (tool + ":", shutil.which(tool) or "NOT FOUND"))
+    if soffice and shutil.which("pdftotext") and shutil.which("pdfinfo"):
+        print("\nOK - check and budget can verify page count, bottom margin, "
+              "and parse recoverability.")
+        return
+    print("\nIncomplete (%s).\nmatch, extract, apply, fill, and the voice lint "
+          "still work. check and budget will skip page and parse verification "
+          "and say so." % render_unavailable_reason())
+    sys.exit(1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1268,6 +1348,8 @@ def main():
     p.add_argument("--exit-code", action="store_true"); p.set_defaults(fn=cmd_shape)
 
     p = sub.add_parser("extract"); p.add_argument("resume"); p.set_defaults(fn=cmd_extract)
+
+    p = sub.add_parser("doctor"); p.set_defaults(fn=cmd_doctor)
 
     p = sub.add_parser("match"); p.add_argument("resume"); p.add_argument("jd")
     p.add_argument("--json", action="store_true")

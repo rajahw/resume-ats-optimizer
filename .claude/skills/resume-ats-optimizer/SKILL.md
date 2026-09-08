@@ -5,7 +5,13 @@ description: Tailor canon_resume.odt to a specific pasted job description - surf
 
 # Resume tailoring against a pasted job description
 
-`SCRIPT=~/.claude/skills/resume-ats-optimizer/scripts/odt_text.py`
+`SCRIPT=.claude/skills/resume-ats-optimizer/scripts/odt_text.py`
+
+Paths are relative to the working directory, which is the repository root - canon,
+`jd.txt`, and the outputs all live there too. Commands below say `python3`; if that
+name is missing or broken on this machine (common on Windows, where it is often
+absent or a Store stub), fall back to `python` or `py -3` and use the same one for
+every command in the run.
 
 ## Output naming
 
@@ -49,7 +55,8 @@ is empty and the outputs are plain `Resume.odt` and `ATS_Report.md`.
    requirements"). Never claim a change makes the resume pass or fail an ATS, and never
    cite a rejection-rate statistic. Say only what to add, remove, or reword, and why.
    Exact-terminology swaps are a recruiter-search retrieval effect; parse safety is a
-   verified property. Nothing beyond that is knowable.
+   verified property - but only on a run where `check` actually measured it (step 10).
+   Nothing beyond that is knowable.
 7. **Refuse to tailor a fundamentally misaligned resume** (below).
 8. **Never tailor a document that is not a resume**, and never write one to replace it.
    `canon_resume.odt` is whatever the user put there; it is not guaranteed to be a
@@ -292,6 +299,11 @@ A gap that consultation *filled* is not a disqualifier - that is the system work
 10. `python3 $SCRIPT check canon_resume.odt <PREFIX>_Resume.odt`
     Fails on voice violations, >1 page, bottom-margin overflow, or a parse regression.
     Revise and re-run until clean. Show the new/changed bullets in your message.
+    **If it warns that page and parse checks were SKIPPED**, this machine has no
+    LibreOffice or poppler, and nothing about page count, margins, or parse
+    safety was measured. Relay that, name what the warning says is missing, and
+    do not call the result verified or say it fits one page - an `OK` that
+    carries that warning means the voice lint passed and nothing else did.
 11. **Write `<PREFIX>_ATS_Report.md`**, reading
     `references/report-template.md` at this point and not before. Keep it terse - tables,
     not prose. Report tokens are the most expensive in the run. The report describes the

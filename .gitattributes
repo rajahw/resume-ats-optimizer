@@ -1,0 +1,10 @@
+# Shebang lines and shell scripts must arrive with LF endings even on a Windows
+# clone with core.autocrlf=true: a CRLF `#!/usr/bin/env python3` line makes the
+# kernel (and Git Bash) look for an interpreter named "python3\r" and fail.
+*.sh          text eol=lf
+*.py          text eol=lf
+hooks/pre-commit text eol=lf
+
+# ODT files are zip archives. Any line-ending translation corrupts them.
+*.odt         binary
+*.pdf         binary

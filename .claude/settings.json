@@ -14,7 +14,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/block-pii-access.py\"",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/hooks/guard.sh\"",
             "timeout": 10,
             "statusMessage": "Checking for PII access"
           }
