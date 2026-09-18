@@ -20,8 +20,9 @@ user's first and last name joined by an underscore (`Ada_Lovelace`). **No name i
 hardcoded anywhere in this skill** - it comes from `.output_name` in the working
 directory, or from asking (step 0). To build `PREFIX` from an answer: join first and
 last with `_`, then drop anything that is not a letter, digit, hyphen, or underscore
-(`Ada O'Neil-Smith` → `Ada_ONeil-Smith`). If the user declines to give a name, `PREFIX`
-is empty and the outputs are plain `Resume.odt` and `ATS_Report.md`.
+(`Ada O'Neil-Smith` → `Ada_ONeil-Smith`). If the user declines to give a name, drop the
+`<PREFIX>_` prefix entirely from the output names below, so they are plain `Resume.odt`
+and `ATS_Report.md` rather than `_Resume.odt`.
 
 `.output_name` is gitignored - it holds a real name, and git history is permanent.
 
@@ -45,9 +46,12 @@ is empty and the outputs are plain `Resume.odt` and `ATS_Report.md`.
    canon and `<PREFIX>_Resume.odt` keep them forever. The `fill` command (step 12) is
    the only thing that ever replaces one, it does so mechanically from a file you
    cannot read, and it writes to a separate `_filled` copy.
-4. **Only what `extract` surfaces is editable** - bullets, Skills values, and header
-   `.mid` (tech stack) fields. Contact block, section headings, employers, job titles,
-   dates, degree, and GPA are never touched.
+4. **Only bullets, Skills values, and header `.mid` (tech stack) fields are editable.**
+   Contact block, section headings, employers, project names, job titles, dates, degree,
+   and GPA are never touched - `apply` refuses a header `.left` or `.right` edit unless
+   it is given `--identity`, which only the one-time tokenization uses. Note that
+   `extract` surfaces `left` and `right` for context; being listed there does not make a
+   field writable.
 5. **Mirror canon's own voice** (below).
 6. **Never score the resume, and never overclaim about ATS.** No match score, coverage
    percentage, rating, grade, or before/after number - not in conversation, not in the

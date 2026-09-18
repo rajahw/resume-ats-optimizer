@@ -49,9 +49,15 @@ Requirements still unbacked after consultation. Genuinely absent, not merely unw
 
 ## Checks
 
-- Parse: all sections recovered in reading order, contact line intact
+- Parse: all section headings recovered in reading order, every changed bullet
+  recoverable as text
 - Length: one page, Npt of bottom margin remaining
-- Voice: no em dashes, one sentence per bullet
+- Voice: changed bullets match canon's own punctuation and phrasing habits
+
+Report only what `check` actually measured. It does not inspect the contact
+block, and it has no house voice to enforce - it compares against canon. If
+`check` said the page and parse half was skipped, say so here instead of
+reporting a result.
 
 ---
 *The resume is already parse-safe: single column, no tables, standard headings,

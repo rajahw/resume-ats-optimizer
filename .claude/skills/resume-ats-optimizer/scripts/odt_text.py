@@ -36,7 +36,12 @@ import zipfile
 # ---------------------------------------------------------------- constants
 
 RIGHT_TAB_STYLE = "PRA"          # generated automatic style carrying the right tab stop
-BULLET_STYLES = ("P8", "P11")    # paragraph styles used inside list items
+
+# Fallbacks for a document whose page layout does not declare its geometry:
+# US Letter with half-inch margins. page_bottom_limit() prefers the real values.
+DEFAULT_TEXT_WIDTH_IN = 7.5
+DEFAULT_BOTTOM_LIMIT_PT = 756.0
+SAFE_RESERVE_PT = 18.0           # 0.25in of slack before the bottom margin
 
 # Phrases that read as generated boilerplate rather than as something a person
 # wrote. A phrase canon already uses is exempt at lint time: the user's own
@@ -143,6 +148,16 @@ def esc(text):
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def esc_attr(text):
+    """esc() plus quotes, for a value landing inside an attribute.
+
+    `fill` substitutes into raw XML, and tokens live in xlink:href="..." as well
+    as in text nodes, so a value carrying a quote would otherwise close the
+    attribute early and corrupt the document.
+    """
+    return esc(text).replace('"', "&quot;").replace("'", "&apos;")
+
+
 def unesc(text):
     return text.replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&")
 
@@ -157,7 +172,10 @@ def strip_tags(xml):
 
 # ---------------------------------------------------------------- normalize
 
-TOKEN_RE = re.compile(r"<[^>]*>|[^<]+")
+# Splits inner XML into tags and text nodes. Distinct from TOKEN_RE, which
+# matches [Token] placeholders - naming both TOKEN_RE silently shadowed this one
+# and made normalize a no-op.
+XML_TOKEN_RE = re.compile(r"<[^>]*>|[^<]+")
 FILLER_TAG_RE = re.compile(r'^<text:(?:tab/|s(?: text:c="\d+")?/)>$')
 
 # A paragraph OPEN tag: attributes must not end in "/", or a self-closing
@@ -172,7 +190,7 @@ BLOCK_RE = re.compile(
 
 
 def _tokens(inner):
-    return TOKEN_RE.findall(inner)
+    return XML_TOKEN_RE.findall(inner)
 
 
 def _is_filler(tok):
@@ -182,23 +200,41 @@ def _is_filler(tok):
     return tok.strip() == ""
 
 
-def _page_text_width_in(path):
-    """Text width in inches from the page layout: width - left - right margin."""
+def _page_layout_getter(path):
+    """A reader for the page layout's inch-valued attributes."""
     with zipfile.ZipFile(path) as z:
         styles = z.read("styles.xml").decode("utf-8")
     m = re.search(r"<style:page-layout-properties[^>]*>", styles)
-    if not m:
-        return 7.5
-    props = m.group(0)
+    props = m.group(0) if m else ""
 
     def get(attr):
         mm = re.search(attr + r'="([\d.]+)in"', props)
         return float(mm.group(1)) if mm else None
 
+    return get
+
+
+def _page_text_width_in(path):
+    """Text width in inches from the page layout: width - left - right margin."""
+    get = _page_layout_getter(path)
     w, ml, mr = get("fo:page-width"), get("fo:margin-left"), get("fo:margin-right")
     if None in (w, ml, mr):
-        return 7.5
+        return DEFAULT_TEXT_WIDTH_IN
     return round(w - ml - mr, 4)
+
+
+def page_bottom_limit(path):
+    """Deepest allowed text edge, in points, from the real page geometry.
+
+    Measured rather than assumed: the previous hardcoded 756pt silently
+    mismeasures any document that is not US Letter with a half-inch bottom
+    margin. The same number is the fallback when the layout does not say.
+    """
+    get = _page_layout_getter(path)
+    h, mb = get("fo:page-height"), get("fo:margin-bottom")
+    if None in (h, mb):
+        return DEFAULT_BOTTOM_LIMIT_PT
+    return round((h - mb) * 72.0, 2)
 
 
 def normalize_content(content, width_in):
@@ -210,7 +246,7 @@ def normalize_content(content, width_in):
         'style:type="right"/></style:tab-stops></style:paragraph-properties>'
         "</style:style>" % (RIGHT_TAB_STYLE, width_in)
     )
-    if RIGHT_TAB_STYLE not in content:
+    if ('style:name="%s"' % RIGHT_TAB_STYLE) not in content:
         content = content.replace(
             "</office:automatic-styles>", style_def + "</office:automatic-styles>", 1
         )
@@ -327,10 +363,8 @@ def extract_units(content):
                     "id": uid, "kind": "header", "section": section,
                     "left": left, "mid": mid, "right": right, "_ptext": txt,
                 })
-            elif section == "EXPERIENCE" and re.search(
-                r'text:style-name="P7"', attrs
-            ):
-                pass  # job title line - not editable
+            # Anything else under a heading with no tab - a job title line, say -
+            # is deliberately not surfaced, so it cannot be tailored.
         else:  # text:list
             for lm in re.finditer(
                 r"<text:list-item>\s*<text:p([^>]*)>(.*?)</text:p>\s*</text:list-item>",
@@ -766,26 +800,37 @@ def cmd_apply(args):
             sys.exit("apply: unknown id %r" % uid)
         if u["kind"] == "bullet":
             old = u["_raw"]
-            if "<" in old:
-                sys.exit("apply: bullet %s contains markup; refusing" % uid)
             needle = ">" + old + "<"
             if content.count(needle) != 1:
                 sys.exit("apply: bullet %s text matches %d places, need exactly 1"
                          % (uid, content.count(needle)))
+            # A bullet carrying inline spans (bolded metrics, say) is replaced
+            # whole. The emphasis described the old wording, so it cannot survive
+            # a rewrite - but say which bullet lost it rather than dropping it
+            # silently, and never refuse the edit outright.
+            if "<" in old:
+                print("note: %s had inline emphasis; it was dropped with the "
+                      "old wording" % uid)
             content = content.replace(needle, ">" + esc(new) + "<", 1)
         elif u["kind"] == "skills":
             content = _set_skills_value(content, u["_ptext"], new)
         elif u["kind"] == "header":
-            if field == "mid" and u["mid"]:
-                content = _replace_in_para(content, u["_ptext"], u["mid"], new)
-            elif field == "left":
-                content = _replace_in_para(content, u["_ptext"], u["left"], new)
-            elif field == "right" and args.identity:
-                # Dates are facts, not tailoring surface; only the one-time
-                # tokenization may touch a right field.
-                content = _replace_in_para(content, u["_ptext"], u["right"], new)
+            if field == "mid":
+                if u["mid"]:
+                    content = _replace_in_para(content, u["_ptext"], u["mid"], new)
+                else:
+                    # No tech-stack segment yet: add one after the title rather
+                    # than failing, so a canon whose headers carry no "|" is
+                    # still tailorable.
+                    content = _replace_in_para(
+                        content, u["_ptext"], u["left"], u["left"] + " " + new)
+            elif field in ("left", "right") and args.identity:
+                # Employers, project names, schools and dates are facts, not
+                # tailoring surface. Only the one-time tokenization may touch them.
+                content = _replace_in_para(content, u["_ptext"], u[field], new)
             else:
-                sys.exit("apply: header %s - only .mid and .left are writable" % uid)
+                sys.exit("apply: header %s - only .mid is writable without "
+                         "--identity" % uid)
 
     # Resolve every anchor before inserting: an insert never changes another
     # anchor's raw text, so one resolution pass is safe and order-independent.
@@ -887,6 +932,9 @@ SOFFICE_FLATPAK = ["flatpak", "run",
                    "--command=/app/libreoffice/program/soffice",
                    "org.libreoffice.LibreOffice"]
 
+# Staging root for renders. A module constant so tests can redirect it.
+RENDER_CACHE = os.path.join("~", ".cache", "odt_text")
+
 
 @functools.lru_cache(maxsize=1)
 def find_soffice():
@@ -924,19 +972,31 @@ def to_pdf(odt):
     soffice = find_soffice()
     if not soffice:
         return None
-    base = os.path.expanduser("~/.cache/odt_text")
+    base = os.path.expanduser(RENDER_CACHE)
     os.makedirs(base, exist_ok=True)
     out = tempfile.mkdtemp(prefix="render-", dir=base)
-    staged = os.path.join(out, os.path.basename(odt))
-    shutil.copy(odt, staged)
+    # The staged copy is the caller's file verbatim - for `fill` that is the
+    # resume with real identity values in it. Every path that does not hand back
+    # a live pdf has to take the directory with it, or that copy outlives the run
+    # somewhere no .gitignore reaches.
+    ok = False
     try:
-        subprocess.run(
-            soffice + ["--headless", "--convert-to", "pdf", "--outdir", out, staged],
-            check=True, capture_output=True, timeout=180)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    pdf = os.path.splitext(staged)[0] + ".pdf"
-    return pdf if os.path.exists(pdf) else None
+        staged = os.path.join(out, os.path.basename(odt))
+        shutil.copy(odt, staged)
+        try:
+            subprocess.run(
+                soffice + ["--headless", "--convert-to", "pdf", "--outdir", out, staged],
+                check=True, capture_output=True, timeout=180)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        pdf = os.path.splitext(staged)[0] + ".pdf"
+        if not os.path.exists(pdf):
+            return None
+        ok = True
+        return pdf
+    finally:
+        if not ok:
+            shutil.rmtree(out, ignore_errors=True)
 
 
 def measure_page_budget(odt_path):
@@ -968,12 +1028,14 @@ def cmd_budget(args):
         print("PDF conversion unavailable (%s); budget check skipped"
               % render_unavailable_reason())
         return
-    hard_reserve = 756 - last
-    safe_reserve = 738 - last
+    hard = page_bottom_limit(args.resume)
+    safe = hard - SAFE_RESERVE_PT
+    hard_reserve = hard - last
+    safe_reserve = safe - last
     print("pages: %d" % pages)
     print("last content yMax: %.2fpt" % last)
-    print("reserve to hard limit (756pt): %.2fpt" % hard_reserve)
-    print("reserve to safe buffer (738pt): %.2fpt" % safe_reserve)
+    print("reserve to hard limit (%.0fpt): %.2fpt" % (hard, hard_reserve))
+    print("reserve to safe buffer (%.0fpt): %.2fpt" % (safe, safe_reserve))
     if safe_reserve > 50:
         print("\nNOTABLE: ~%.0fpt of unused space below the safe buffer - "
               "consider using it (add a bullet, lengthen one, or a small "
@@ -982,11 +1044,30 @@ def cmd_budget(args):
 
 # ---------------------------------------------------------------- fill
 
-TOKEN_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9]*\]")
+# Wide enough to see any bracketed token a canon might actually use. A narrower
+# grammar silently ignores [Work_Phone] or [Company-1]: the scanner never reports
+# them unmapped, and fill declares success with a live placeholder still in the
+# document. read_pii_map validates keys with the same pattern so the two agree.
+TOKEN_RE = re.compile(r"\[[A-Za-z0-9][A-Za-z0-9_-]*\]")
 
 # Output shapes .gitignore covers. Filling into anything else would put real
 # identity values on a committable path.
 FILLED_SUFFIXES = ("_filled", "-filled")
+
+
+HREF_RE = re.compile(r'xlink:href="([^"]*)"')
+
+
+def body_tokens(body):
+    """Every [Token] in a body: visible text plus hyperlink targets.
+
+    strip_tags drops attribute values, so a token that lives only in an href
+    (mailto:[Email]) would otherwise look unmapped-safe and be left unfilled.
+    """
+    found = set(TOKEN_RE.findall(strip_tags(body)))
+    for href in HREF_RE.findall(body):
+        found.update(TOKEN_RE.findall(unesc(href)))
+    return found
 
 
 def read_pii_map(path, apostrophe=None):
@@ -1055,7 +1136,7 @@ def cmd_fill(args):
     # Which tokens need a mapping is a question about the source document, so
     # ask it before substituting. Asking afterwards would misread a [Token]
     # that arrived as part of a replacement value as an unfilled placeholder.
-    present = set(TOKEN_RE.findall(strip_tags(content[body_start:])))
+    present = body_tokens(content[body_start:])
 
     # One pass over the body, not one pass per token: substituting in sequence
     # would rescan text already inserted, so a value that happened to contain a
@@ -1063,7 +1144,9 @@ def cmd_fill(args):
     def substitute(match):
         token = match.group(0)
         counts[token] += 1
-        return esc(mapping[token])
+        # esc_attr, not esc: one pass covers text nodes and xlink:href alike, and
+        # quote entities resolve correctly in both.
+        return esc_attr(mapping[token])
 
     pattern = re.compile("|".join(re.escape(t) for t in mapping))
     content = content[:body_start] + pattern.sub(substitute, content[body_start:])
@@ -1083,13 +1166,17 @@ def cmd_fill(args):
         print("filled: (nothing)")
 
     if not problems:
-        write_odt(args.resume, args.output, content)
-        print("wrote %s" % args.output)
+        # Staged next to the destination, not moved into place until the page
+        # check passes. A rejected fill that still left the file behind invites
+        # someone reading only the exit code to submit the bad one.
+        staging = args.output + ".partial"
+        write_odt(args.resume, staging, content)
 
-        # The render staging directory holds a PDF of real identity values.
+        hard = page_bottom_limit(staging)
+        safe = hard - SAFE_RESERVE_PT
         pdf = None
         try:
-            pages, last, pdf = measure_page_budget(args.output)
+            pages, last, pdf = measure_page_budget(staging)
             if last is None:
                 warnings.append("PDF conversion unavailable (%s); page check "
                                 "skipped - verify by eye that the filled resume "
@@ -1098,15 +1185,15 @@ def cmd_fill(args):
             else:
                 print("\npages: %d" % pages)
                 print("last content yMax: %.2fpt" % last)
-                print("reserve to hard limit (756pt): %.2fpt" % (756 - last))
-                print("reserve to safe buffer (738pt): %.2fpt" % (738 - last))
+                print("reserve to hard limit (%.0fpt): %.2fpt" % (hard, hard - last))
+                print("reserve to safe buffer (%.0fpt): %.2fpt" % (safe, safe - last))
                 if pages > 1:
                     problems.append("filled resume is %d pages; must be 1" % pages)
-                elif last > 756:
+                elif last > hard:
                     problems.append("filled content overflows bottom margin "
                                     "(%.2fpt); real values are longer than the "
                                     "tokens they replaced" % last)
-                elif last > 738:
+                elif last > safe:
                     warnings.append("less than 0.25in reserve left (%.2fpt)" % last)
         except Exception as e:
             warnings.append("PDF conversion unavailable (%s); page check skipped "
@@ -1115,6 +1202,13 @@ def cmd_fill(args):
         finally:
             if pdf:
                 shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
+
+        if problems:
+            os.remove(staging)
+            problems.append("no file was written")
+        else:
+            os.replace(staging, args.output)
+            print("wrote %s" % args.output)
 
     for w in warnings:
         print("WARN: %s" % w)
@@ -1264,10 +1358,12 @@ def cmd_check(args):
         if pages > 1:
             problems.append("resume is %d pages; must be 1" % pages)
         if last is not None:
-            print("\npage budget: last content yMax %.2fpt (margin 756pt)" % last)
-            if last > 756:
+            hard = page_bottom_limit(args.output)
+            print("\npage budget: last content yMax %.2fpt (margin %.0fpt)"
+                  % (last, hard))
+            if last > hard:
                 problems.append("content overflows bottom margin (%.2fpt)" % last)
-            elif last > 738:
+            elif last > hard - SAFE_RESERVE_PT:
                 warnings.append("less than 0.25in reserve left (%.2fpt)" % last)
         # parse check - what a real parser's text extraction would see
         flat = subprocess.run(["pdftotext", "-layout", pdf, "-"],
@@ -1292,7 +1388,7 @@ def cmd_check(args):
     # Scan the whole body, not just editable units: the contact block holds
     # [Name]/[Email]/[Phone] and is deliberately not surfaced by extract.
     body = out[out.find("<office:body>"):]
-    tokens = sorted(set(re.findall(r"\[[A-Za-z][A-Za-z0-9]*\]", strip_tags(body))))
+    tokens = sorted(body_tokens(body))
     if tokens:
         print("\nplaceholders still present (expected - fill before submitting):")
         print("  " + "  ".join(tokens))

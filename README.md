@@ -177,7 +177,13 @@ and an apostrophe in a value is normalized to whichever form canon itself uses, 
 typed in a plain-text editor does not end up the odd one out. The
 token names are not fixed — whatever the file declares is what gets replaced, so a canon
 with different tokens just needs different keys. Every token in the document must have a
-mapping or the fill fails.
+mapping or the fill fails. Tokens inside a hyperlink target count too, so `mailto:[Email]`
+and `https://[Website]` reuse the values above, while a link that needs a whole URL of its
+own (a project repo, say) gets its own token, e.g. `[CattleRepo] = https://github.com/...`.
+
+A token is a bracketed run of letters, digits, underscores, and hyphens — `[Name]`,
+`[Work_Phone]`, and `[Company-1]` all count. Anything else between brackets is ordinary
+text and is left alone.
 
 Then:
 
@@ -215,6 +221,24 @@ The hook is wired in `.claude/settings.json`, which is committed on purpose: it 
 security control, so it should travel with the clone rather than live in someone's local
 config. **Claude Code asks you to trust project hooks the first time it loads them** —
 approve it once, or run `/hooks` to review what it does.
+
+The guard is a guardrail, not a sandbox. It matches filenames in commands, so it stops
+the direct and the careless route but cannot see through a directory-wide sweep that
+never names the file, shell indirection that builds the name at runtime, or a content
+search whose *pattern* is the secret. Closing those needs an OS-level boundary rather
+than a longer regex; `tests/test_guard.py` pins the known gaps so they are not mistaken
+for coverage.
+
+## Tests
+
+```bash
+python3 -m unittest discover tests
+```
+
+Standard library only — no pytest, matching the rest of the tool. Every fixture is
+synthetic: the suite builds its own `.odt` documents and its own all-fake identity maps,
+and never reads your canon, your `pii.txt`, or any filled output. That is deliberate, so
+an agent forbidden from touching those files can still run the suite.
 
 ## Design notes
 
@@ -259,6 +283,6 @@ systems do not auto-reject.
 What *is* verifiable is checked: `check` runs `pdftotext` — the same text-extraction step
 a parser performs — and asserts every section is recoverable in reading order, the page
 count is 1, content stays inside the bottom margin, and no punctuation, character, or
-boilerplate phrase foreign to your own résumé crept into changed prose. On a machine
+boilerplate phrase foreign to your own résumé crept into the bullets that changed. On a machine
 without LibreOffice or poppler it says loudly that the page and parse half was skipped,
 so an `OK` never stands in for a measurement that did not happen.
