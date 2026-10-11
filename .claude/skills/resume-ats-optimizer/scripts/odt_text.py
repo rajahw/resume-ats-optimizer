@@ -749,6 +749,13 @@ def _set_skills_value(content, ptext, new):
         if strip_tags(m.group(2)).strip() != ptext.strip():
             continue
         spans = re.findall(r"(<text:span[^>]*>)(.*?)</text:span>", m.group(2), re.S)
+        if len(spans) == 1 and m.group(2).rstrip().startswith(spans[0][0]):
+            # Label span followed by the value as bare text (no value spans).
+            label_open, label_txt = spans[0]
+            tail = m.group(2)[m.group(2).index("</text:span>") + len("</text:span>"):]
+            if strip_tags(tail).strip():
+                return (content[: m.start(2)] + label_open + label_txt
+                        + "</text:span>" + esc(new) + content[m.end(2):])
         if len(spans) < 2:
             sys.exit("apply: skills line has unexpected span layout")
         label_open, label_txt = spans[0]
