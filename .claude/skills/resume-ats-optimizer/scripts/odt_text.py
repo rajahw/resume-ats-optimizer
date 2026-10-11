@@ -16,6 +16,10 @@ Commands:
   budget     measure a resume as submitted: pages, spare lines, per-bullet wrap slack
   fill       replace [Token] placeholders from a local pii.txt into a *_filled copy
   doctor     report whether this machine can measure pages (and a resume's fonts)
+  split      split a pasted inbox of postings into one application folder each
+  name       rename an application folder to <batch>_<company>_<role>; flag repeats
+  stage      record how far an application has got
+  status     list applications still in progress, or one batch's
 
 `fill` is the one command that handles real identity values. It reads the map
 itself and prints only token names and counts, never a value, so the command can
@@ -31,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 import zipfile
 
@@ -1656,6 +1661,131 @@ def cmd_check(args):
     print("\nOK")
 
 
+# ---------------------------------------------------------------- batch
+#
+# A batch is a set of postings tailored in one sitting. Each posting becomes an
+# application folder under applications/, and a state.json there records how far
+# it has got, so an interrupted batch resumes instead of starting over.
+
+POSTING_DELIM_RE = re.compile(r"^[ \t]*={5,}[ \t]*$", re.M)
+POSTING_FILE = "posting.txt"
+STATE_FILE = "state.json"
+STAGES = ("new", "analyzed", "consulted", "applied", "filled", "skipped", "needs-you")
+DONE_STAGES = ("filled", "skipped")
+
+
+def split_postings(text):
+    """Postings separated by a line of five or more '='. Blank chunks drop."""
+    return [c.strip() + "\n" for c in POSTING_DELIM_RE.split(text) if c.strip()]
+
+
+def slug(text):
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "unknown"
+
+
+def read_state(folder):
+    with open(os.path.join(folder, STATE_FILE), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def write_state(folder, state):
+    path = os.path.join(folder, STATE_FILE)
+    with open(path + ".tmp", "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=2)
+        fh.write("\n")
+    os.replace(path + ".tmp", path)
+
+
+def application_folders(root):
+    if not os.path.isdir(root):
+        return []
+    return sorted(os.path.join(root, d) for d in os.listdir(root)
+                  if os.path.isfile(os.path.join(root, d, STATE_FILE)))
+
+
+def cmd_split(args):
+    if not os.path.isfile(args.inbox):
+        sys.exit("split: %s not found. Paste postings into it, separated by a "
+                 "line of =====." % args.inbox)
+    with open(args.inbox, encoding="utf-8") as fh:
+        postings = split_postings(fh.read())
+    if not postings:
+        sys.exit("split: %s holds no postings." % args.inbox)
+
+    os.makedirs(args.into, exist_ok=True)
+    taken = set(os.listdir(args.into))
+    n = 0
+    for text in postings:
+        n += 1
+        while "%s_posting-%02d" % (args.date, n) in taken:
+            n += 1
+        folder = os.path.join(args.into, "%s_posting-%02d" % (args.date, n))
+        os.makedirs(folder)
+        with open(os.path.join(folder, POSTING_FILE), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        write_state(folder, {"stage": "new", "batch": args.date})
+        print(folder)
+
+    # Emptied only once every posting is on disk: a leftover inbox would be
+    # split a second time on the next run.
+    open(args.inbox, "w").close()
+    print("\n%d posting(s) split; %s emptied" % (len(postings), args.inbox))
+
+
+def cmd_name(args):
+    folder = os.path.normpath(args.folder)
+    root = os.path.dirname(folder) or "."
+    state = read_state(folder)
+    key = "%s_%s" % (slug(args.company), slug(args.role))
+
+    earlier = [os.path.basename(f) for f in application_folders(root)
+               if os.path.normpath(f) != folder
+               and os.path.basename(f).split("_", 1)[-1] == key]
+
+    target = os.path.join(root, "%s_%s" % (state["batch"], key))
+    n = 2
+    while os.path.exists(target) and os.path.normpath(target) != folder:
+        target = os.path.join(root, "%s_%s-%d" % (state["batch"], key, n))
+        n += 1
+    if os.path.normpath(target) != folder:
+        os.rename(folder, target)
+
+    if earlier:
+        state["duplicate_of"] = earlier
+        write_state(target, state)
+        print("DUPLICATE: already applied to this company and role: %s"
+              % ", ".join(earlier))
+    print(target)
+
+
+def cmd_stage(args):
+    state = read_state(args.folder)
+    state["stage"] = args.stage
+    if args.note:
+        state["note"] = args.note
+    else:
+        state.pop("note", None)
+    write_state(args.folder, state)
+    print("%s: %s" % (args.folder, args.stage))
+
+
+def cmd_status(args):
+    rows = []
+    for folder in application_folders(args.root):
+        state = read_state(folder)
+        if args.batch and state.get("batch") != args.batch:
+            continue
+        if not (args.all or args.batch) and state["stage"] in DONE_STAGES:
+            continue
+        rows.append((state["stage"], folder, state.get("note", "")))
+    if not rows:
+        print("no %sapplications" % ("" if args.all or args.batch else "open "))
+        return
+    for stage, folder, note in rows:
+        print("%-10s %s%s" % (stage, folder, "  - " + note if note else ""))
+
+
 # ---------------------------------------------------------------- entry
 
 def cmd_normalize(args):
@@ -1745,6 +1875,24 @@ def main():
     p.add_argument("-o", "--output", required=True)
     p.add_argument("--no-page-check", action="store_true")
     p.add_argument("--map", default="pii.txt"); p.set_defaults(fn=cmd_fill)
+
+    p = sub.add_parser("split"); p.add_argument("inbox", nargs="?",
+                                                default="postings/inbox.txt")
+    p.add_argument("--into", default="applications")
+    p.add_argument("--date", default=time.strftime("%Y-%m-%d"))
+    p.set_defaults(fn=cmd_split)
+
+    p = sub.add_parser("name"); p.add_argument("folder")
+    p.add_argument("company"); p.add_argument("role"); p.set_defaults(fn=cmd_name)
+
+    p = sub.add_parser("stage"); p.add_argument("folder")
+    p.add_argument("stage", choices=STAGES); p.add_argument("--note")
+    p.set_defaults(fn=cmd_stage)
+
+    p = sub.add_parser("status"); p.add_argument("root", nargs="?",
+                                                 default="applications")
+    p.add_argument("--batch"); p.add_argument("--all", action="store_true")
+    p.set_defaults(fn=cmd_status)
 
     args = ap.parse_args()
     args.fn(args)

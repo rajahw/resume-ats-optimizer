@@ -11,8 +11,10 @@ install.sh                one-shot setup for a fresh clone; idempotent
 .claude/skills/resume-ats-optimizer/
   SKILL.md                workflow, hard rules, voice rules
   scripts/odt_text.py     normalize / shape / extract / match / apply / check /
-                          fill / budget / doctor
-  references/             report template, read only at write time
+                          fill / budget / doctor / split / name / stage / status
+  references/             batch summary template, read only at write time
+GLOSSARY.md               the domain terms: canon, posting, application, batch, ...
+docs/adr/                 decisions that would otherwise look odd
 hooks/                    pre-commit guard against committing real PII, plus the
                           PreToolUse hook that keeps Claude out of pii.txt.
                           Both are shell shims that locate a Python interpreter
@@ -26,16 +28,21 @@ pii.txt                   real values for the [Token]s - local only, gitignored,
                           read by `fill` and by nothing else
 canon_resume_preview.pdf  LibreOffice render of canon, regenerable, gitignored
 migration/                edit sets that built your canon, if you keep any - gitignored
+postings/inbox.txt        where you paste postings - gitignored
+applications/             one folder per application - gitignored
+experience.md             the Experience ledger - gitignored
 ```
 
 **Canon is not in this repository.** It is your own document, so a fresh clone arrives
 without one and the skill aborts on its first run and asks you to add it. Save your
 résumé as `canon_resume.odt` in the repo root before invoking.
 
-Tailored outputs (`<First>_<Last>_Resume.odt`, `<First>_<Last>_ATS_Report.md`) are
-written to the repo root and overwritten each run. Git history is the per-job archive,
-so commit between applications — though that only works from a tokenized canon, since
-the pre-commit hook deliberately blocks a tailored `.odt` carrying real PII.
+Each application gets its own folder, `applications/<date>_<company>_<role>/`, holding
+the posting, the edit set, the tokenized `<First>_<Last>_Resume.odt`, and the
+`<First>_<Last>_Resume_filled.odt` you submit. The folders are gitignored and are the
+archive of past applications — nothing to commit between them, and nothing overwritten
+(see [docs/adr/0001](docs/adr/0001-applications-as-gitignored-folders.md)). Back them up
+yourself if you want them kept.
 
 The name in those filenames is not baked into the skill. On its first run in a clone it
 asks what first and last name to file outputs under, saves the answer to `.output_name`,
@@ -52,7 +59,7 @@ cp /path/to/your/resume.odt canon_resume.odt   # gitignored, never committed
 **The skill needs no installation.** It lives at
 `.claude/skills/resume-ats-optimizer/`, which Claude Code loads for anyone working in
 this directory — cloning the repo is the whole install, on every platform. That also
-scopes it correctly: canon, `jd.txt`, and the outputs are all resolved relative to this
+scopes it correctly: canon, the inbox, and `applications/` are all resolved relative to this
 directory, so the skill was only ever useful from inside it.
 
 What `install.sh` does is the part a clone deliberately cannot do for you: point git at
@@ -130,16 +137,33 @@ and `check` fails unless you pass `--no-page-check` to accept that.
 
 ```
 /model sonnet          # the skill hard-stops on anything but Sonnet
-/resume-ats-optimizer  # with the job description pasted
+/resume-ats-optimizer  # after filling postings/inbox.txt, or with one posting pasted
 ```
 
-Pasting the posting is optional when `jd.txt` already holds one — the skill quotes back
-the posting it found and asks whether to reuse it or take a new paste, so re-running
-against the same job costs nothing. A new paste overwrites `jd.txt`.
+The skill works in **batches**. Paste every posting you are applying to into
+`postings/inbox.txt`, with a line of `=====` between each, and invoke once. A single
+posting can be pasted straight into chat instead; several go through the file, because
+having Claude re-type each one costs tokens the file route does not.
 
-It surfaces the gaps and asks about them **before** writing anything, because a keyword
-missing from the résumé usually means it was never written down, not that the experience
-is absent. Answer the questions, and it writes the tailored `.odt` plus a report.
+1. **Analyze.** Each posting gets its own folder and a proposed edit set. No questions yet.
+2. **Consult.** One numbered list for the whole batch: experience questions asked once
+   across all postings, then a block per posting. Answer tersely (`E1 y, 2.R1 n`).
+   Blanks resolve safely: rewordings accepted, bullets kept, unanswered experience
+   treated as no. Disqualifiers and duplicate applications must be answered.
+3. **Apply.** Every application is tailored, checked, and filled without pausing.
+   Anything it cannot fix on its own lands on a "needs you" list instead of stopping
+   the batch.
+4. **Wrap up.** One `applications/<date>_batch-summary.md` and a short chat reply listing
+   what is ready to submit.
+
+It asks about gaps **before** writing anything, because a keyword missing from the
+résumé usually means it was never written down, not that the experience is absent.
+Your answers are kept in `experience.md`, the **Experience ledger**, so a question
+answered once is never asked again — edit the file to change an answer. It stores
+`[Token]`s, never real employer names.
+
+Every application's stage is saved in its folder, so an interrupted batch picks up where
+it stopped the next time you invoke the skill.
 
 The script alone is usable without Claude:
 
@@ -148,7 +172,10 @@ SCRIPT=.claude/skills/resume-ats-optimizer/scripts/odt_text.py
 
 python3 $SCRIPT doctor
 python3 $SCRIPT shape   canon_resume.odt
-python3 $SCRIPT match   canon_resume.odt jd.txt
+python3 $SCRIPT split                          # postings/inbox.txt -> applications/
+python3 $SCRIPT name    applications/<folder> "Acme" "Backend Engineer"
+python3 $SCRIPT status                         # applications still in progress
+python3 $SCRIPT match   canon_resume.odt applications/<folder>/posting.txt
 python3 $SCRIPT extract canon_resume.odt
 python3 $SCRIPT apply   canon_resume.odt edits.json -o out.odt
 python3 $SCRIPT check   canon_resume.odt out.odt

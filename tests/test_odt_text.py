@@ -417,5 +417,79 @@ class TestShape(TempCase):
         self.assertTrue(sig["contact"])
 
 
+class TestBatch(TempCase):
+    def setUp(self):
+        super().setUp()
+        self.inbox = self.path("inbox.txt")
+        self.apps = self.path("applications")
+
+    def split(self, text, date="2026-01-02"):
+        with open(self.inbox, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return self.run_cli("split", self.inbox, "--into", self.apps, "--date", date)
+
+    def test_split_on_delimiter_lines_only(self):
+        posts = m.split_postings("Acme\nRole A\n=====\n\n= = =\nGlobex\n  ========  \n\n")
+        self.assertEqual(posts, ["Acme\nRole A\n", "= = =\nGlobex\n"])
+
+    def test_split_writes_folders_and_empties_inbox(self):
+        res = self.split("Acme posting\n=====\nGlobex posting\n")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        folders = m.application_folders(self.apps)
+        self.assertEqual([os.path.basename(f) for f in folders],
+                         ["2026-01-02_posting-01", "2026-01-02_posting-02"])
+        with open(os.path.join(folders[1], "posting.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "Globex posting\n")
+        self.assertEqual(m.read_state(folders[0]), {"stage": "new", "batch": "2026-01-02"})
+        self.assertEqual(os.path.getsize(self.inbox), 0)
+
+    def test_second_split_same_day_does_not_collide(self):
+        self.split("One\n")
+        self.split("Two\n")
+        self.assertEqual(len(m.application_folders(self.apps)), 2)
+
+    def test_empty_inbox_is_refused(self):
+        res = self.split("\n=====\n  \n")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertEqual(m.application_folders(self.apps), [])
+
+    def test_name_slugs_and_flags_an_earlier_application(self):
+        self.split("Old\n", date="2025-06-01")
+        old = m.application_folders(self.apps)[0]
+        self.run_cli("name", old, "Acme Corp.", "Backend Engineer")
+        self.split("New\n")
+        new = [f for f in m.application_folders(self.apps) if "posting" in f][0]
+        res = self.run_cli("name", new, "ACME corp", "Backend  Engineer")
+        self.assertIn("DUPLICATE: already applied to this company and role: "
+                      "2025-06-01_acme-corp_backend-engineer", res.stdout)
+        named = os.path.join(self.apps, "2026-01-02_acme-corp_backend-engineer")
+        self.assertTrue(os.path.isdir(named))
+        self.assertEqual(m.read_state(named)["duplicate_of"],
+                         ["2025-06-01_acme-corp_backend-engineer"])
+
+    def test_same_role_twice_in_one_batch_gets_a_suffix(self):
+        self.split("A\n=====\nB\n")
+        a, b = m.application_folders(self.apps)
+        self.run_cli("name", a, "Acme", "Dev")
+        self.run_cli("name", b, "Acme", "Dev")
+        names = sorted(os.path.basename(f) for f in m.application_folders(self.apps))
+        self.assertEqual(names, ["2026-01-02_acme_dev", "2026-01-02_acme_dev-2"])
+
+    def test_status_hides_finished_applications_unless_asked(self):
+        self.split("A\n=====\nB\n")
+        a, b = m.application_folders(self.apps)
+        self.run_cli("stage", a, "filled")
+        self.run_cli("stage", b, "needs-you", "--note", "fill overflowed")
+        res = self.run_cli("status", self.apps)
+        self.assertNotIn(a, res.stdout)
+        self.assertIn("needs-you  %s  - fill overflowed" % b, res.stdout)
+        self.assertIn(a, self.run_cli("status", self.apps, "--batch", "2026-01-02").stdout)
+
+    def test_unknown_stage_is_rejected(self):
+        self.split("A\n")
+        res = self.run_cli("stage", m.application_folders(self.apps)[0], "done")
+        self.assertNotEqual(res.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

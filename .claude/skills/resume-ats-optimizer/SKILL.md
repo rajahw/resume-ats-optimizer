@@ -1,28 +1,68 @@
 ---
 name: resume-ats-optimizer
-description: Tailor canon_resume.odt to a specific pasted job description - surface the gaps, discuss them, then make small verbatim-voice edits and verify the result still parses and fits one page. Use when the user pastes a job posting and wants their resume adjusted for it, mentions ATS, keyword match, or tailoring a resume to a role.
+description: Tailor canon_resume.odt to a batch of job postings (one or many) - surface the gaps across all of them, settle them in one consultation, then make small verbatim-voice edits per posting and verify each result still parses and fits one page. Use when the user pastes job postings or fills postings/inbox.txt and wants their resume adjusted, mentions ATS, keyword match, or tailoring a resume to a role.
 ---
 
-# Resume tailoring against a pasted job description
+# Resume tailoring against a batch of postings
+
+Terms follow `GLOSSARY.md`: a **posting** is one employer's text, an **application** is
+a posting plus everything tailored for it, a **batch** is the applications processed in
+one sitting, and **consultation** is the question phase.
 
 `SCRIPT=.claude/skills/resume-ats-optimizer/scripts/odt_text.py`
 
-Paths are relative to the working directory, which is the repository root - canon,
-`jd.txt`, and the outputs all live there too. Commands below say `python3`; if that
+Paths are relative to the working directory, which is the repository root - canon, the
+inbox, the ledger, and `applications/` all live there. Commands below say `python3`; if that
 name is missing or broken on this machine (common on Windows, where it is often
 absent or a Store stub), fall back to `python` or `py -3` and use the same one for
 every command in the run.
 
+## Files
+
+All gitignored - postings are the employer's copyrighted text, and which employers the
+user applies to is private.
+
+- `postings/inbox.txt` - where the user pastes postings, a line of `=====` between each.
+  `split` empties it.
+- `applications/<batch>_<company>_<role>/` - one folder per application:
+  `posting.txt`, `state.json` (its stage), `consultation.md` (proposal and answers),
+  `edits.json`, `<PREFIX>_Resume.odt` (tokenized), `<PREFIX>_Resume_filled.odt` (the
+  one to submit).
+- `applications/<batch>_batch-summary.md` - the batch summary, one per batch.
+- `experience.md` - the **Experience ledger** (below).
+
+## Experience ledger
+
+`experience.md` records experience the user confirmed or denied in past consultations,
+one line per term, keyed by the posting's exact phrasing:
+
+```markdown
+# Experience ledger
+
+- Kubernetes: yes (2026-10-11) - deployed two services to AKS at [Company1]
+- Go: no (2026-10-11)
+```
+
+- **Read it in Phase 1, every batch.** A `yes` counts as confirmed experience under hard
+  rule 2 and goes straight into proposed edits without being asked again. A `no` is
+  never proposed and never asked again.
+- **Write it after consultation**: add or update a line for every experience question the
+  user answered. A question left blank is not recorded either way.
+- **Tokens only.** Name an employer, school, or city the way canon does (`[Company1]`),
+  never by its real value - and if the user's answer names one canon has no token for,
+  drop the name and keep the substance. The user may edit the file; their edits win.
+
 ## Output naming
 
-Outputs are `<PREFIX>_Resume.odt` and `<PREFIX>_ATS_Report.md`, where `PREFIX` is the
+Résumé files are `<PREFIX>_Resume.odt` and `<PREFIX>_Resume_filled.odt` inside each
+application folder, where `PREFIX` is the
 user's first and last name joined by an underscore (`Ada_Lovelace`). **No name is
 hardcoded anywhere in this skill** - it comes from `.output_name` in the working
-directory, or from asking (step 0). To build `PREFIX` from an answer: join first and
+directory, or from asking (Phase 0, step 5). To build `PREFIX` from an answer: join first and
 last with `_`, then drop anything that is not a letter, digit, hyphen, or underscore
 (`Ada O'Neil-Smith` → `Ada_ONeil-Smith`). If the user declines to give a name, drop the
-`<PREFIX>_` prefix entirely from the output names below, so they are plain `Resume.odt`
-and `ATS_Report.md` rather than `_Resume.odt`.
+`<PREFIX>_` prefix entirely, so they are plain `Resume.odt` and `Resume_filled.odt`
+rather than `_Resume.odt`.
 
 `.output_name` is gitignored - it holds a real name, and git history is permanent.
 
@@ -32,8 +72,9 @@ and `ATS_Report.md` rather than `_Resume.odt`.
    Generic ATS advice pushes a Professional Summary, Objective, Profile, or About block;
    if canon carries none, it gets none. What sections a resume has is the user's call.
 2. **Never invent experience - but never assume its absence either.** Added keywords
-   trace either to something canon already says, or to experience the user confirmed
-   during consultation. Those are the only two sources. A gap is never silently written
+   trace either to something canon already says, or to experience the user confirmed -
+   in this batch's consultation, or in an earlier one and recorded as `yes` in the
+   Experience ledger. Those are the only two sources. A gap is never silently written
    in, and never silently written off: it goes to the user as a question first.
 3. **`[Token]` placeholders are literal and immutable to you.** Canon stands in for its
    own PII with bracketed tokens - whichever ones that particular document uses. The
@@ -43,7 +84,7 @@ and `ATS_Report.md` rather than `_Resume.odt`.
    what literally appears in canon, not against any fixed list. Never reword,
    expand, guess at, or fill them; never treat one as a keyword gap, and never conclude
    from a token that a fact is missing. They pass through every edit untouched, and
-   canon and `<PREFIX>_Resume.odt` keep them forever. The `fill` command (step 12) is
+   canon and `<PREFIX>_Resume.odt` keep them forever. The `fill` command (Phase 3) is
    the only thing that ever replaces one, it does so mechanically from a file you
    cannot read, and it writes to a separate `_filled` copy.
 4. **Only bullets, Skills values, and header `.mid` (tech stack) fields are editable.**
@@ -55,11 +96,11 @@ and `ATS_Report.md` rather than `_Resume.odt`.
 5. **Mirror canon's own voice** (below).
 6. **Never score the resume, and never overclaim about ATS.** No match score, coverage
    percentage, rating, grade, or before/after number - not in conversation, not in the
-   report, not informally ("this takes you from about half to most of the
+   batch summary, not informally ("this takes you from about half to most of the
    requirements"). Never claim a change makes the resume pass or fail an ATS, and never
    cite a rejection-rate statistic. Say only what to add, remove, or reword, and why.
    Exact-terminology swaps are a recruiter-search retrieval effect; parse safety is a
-   verified property - but only on a run where `check` actually measured it (step 10).
+   verified property - but only on a run where `check` actually measured it (Phase 3).
    Nothing beyond that is knowable.
 7. **Refuse to tailor a fundamentally misaligned resume** (below).
 8. **Never tailor a document that is not a resume**, and never write one to replace it.
@@ -71,7 +112,9 @@ and `ATS_Report.md` rather than `_Resume.odt`.
    PreToolUse hook enforces this and denies the call: if you are denied, that is the
    system working as designed - relay it and stop, never hunt for another route. Never
    type a real name, email, phone number, or employer into any file, including the
-   report, `.output_name`, and commit messages. `fill` handles all of it and tells you
+   batch summary, `consultation.md`, the Experience ledger, `.output_name`, and commit
+   messages. A posting naming its own employer is the posting's text, not the user's
+   PII, and folder names use it freely. `fill` handles all of it and tells you
    only token names and counts.
 
 ## Voice rules
@@ -99,7 +142,7 @@ next canon will not write like the last one. Read for:
 Style opinions belong to the user. The skill only overrides voice where prose meets ATS
 parsing, and that list is short:
 
-- **Exact JD terminology beats a synonym** - recruiter search matches strings.
+- **Exact posting terminology beats a synonym** - recruiter search matches strings.
 - **Plain characters only.** Ordinary letters, digits, and punctuation; no decorative
   glyphs, ligatures, or symbol bullets, which parse unevenly.
 - **No new structure.** No added sections, headings, tables, columns, or graphics. This
@@ -148,175 +191,222 @@ canon demonstrates; anything consultation might fill in.
 so you do not know whether the user holds a clearance or graduates early. Any suspected
 disqualifier becomes a direct factual question. Only a confirmed *no* counts.
 
-**If confirmed:** write **no** `.odt`. Write only the report, recommending against
-applying, naming the unmeetable requirement and quoting the JD, and saying what would
-change the answer. Warn that any existing `<PREFIX>_Resume.odt` is left over from a
-previous application. **The user can override** - it is a recommendation, not a veto; if
-they say proceed, tailor normally and note it in the report.
+**If confirmed:** write **no** `.odt` for that application and mark it
+`stage <folder> skipped --note "disqualified: <requirement>"`. Its section in the batch
+summary recommends against applying, names the unmeetable requirement quoting the
+posting, and says what would change the answer. The rest of the batch carries on. **The
+user can override** - it is a recommendation, not a veto; if they say proceed, tailor
+normally and note it in the summary.
 
 ## Workflow
 
-### Stage 1 - analyze and consult (produces no resume and no report)
+A batch runs in four phases. Every application's stage is on disk (`state.json`), so an
+interrupted batch - a closed session, a compacted context - resumes by re-invoking the
+skill: Phase 0 finds the open applications and each one picks up at its stage.
 
-0. **Model check.** State the active model. **Only the Sonnet family runs this skill.**
+| Stage | Meaning |
+|-------|---------|
+| `new` | split from the inbox, not yet read |
+| `analyzed` | named, matched, proposal in `consultation.md` |
+| `consulted` | answers recorded in `consultation.md` |
+| `applied` | `check` passed on `<PREFIX>_Resume.odt` |
+| `filled` | `fill` passed; done |
+| `skipped` | no résumé by decision (disqualified, duplicate declined); done |
+| `needs-you` | Phase 3 hit something it could not fix unattended |
+
+Set a stage with `python3 $SCRIPT stage <folder> <stage> [--note "..."]`.
+
+### Phase 0 - setup (once per batch)
+
+1. **Model check.** State the active model. **Only the Sonnet family runs this skill.**
    On anything else - Haiku or an older small model below it, and Opus or Fable above
    it - **stop immediately** and tell the user to run `/model sonnet` and re-invoke.
    The larger models are not an acceptable substitute here: this runs dozens of times a
    week and Sonnet is the tier it is written and budgeted for.
 
-   **Then confirm canon exists.** `canon_resume.odt` is deliberately not in the
-   repository - it is the user's own document and stays local, so a fresh clone does
-   not have one. If it is missing from the working directory, **stop and ask for it**:
-   they save their resume as `canon_resume.odt` here and re-invoke. Never guess at
-   another `.odt`, never substitute a differently named file, and never offer to write
-   a resume to stand in for the missing one.
+2. **Confirm canon exists.** `canon_resume.odt` is deliberately not in the repository -
+   it is the user's own document and stays local, so a fresh clone does not have one.
+   If it is missing from the working directory, **stop and ask for it**: they save their
+   resume as `canon_resume.odt` here and re-invoke. Never guess at another `.odt`, never
+   substitute a differently named file, and never offer to write a resume to stand in
+   for the missing one.
 
-   **Then run `python3 $SCRIPT shape canon_resume.odt`.** It reports whether the
-   document parses as a resume this tool can edit.
+3. **Run `python3 $SCRIPT shape canon_resume.odt`.** It reports whether the document
+   parses as a resume this tool can edit.
    - `VERDICT: resume` - continue, and say nothing about the check.
-   - `VERDICT: unrecognized` - carry the finding into Stage 1. Do not abort here and
-     do not decide what the document is: say plainly at step 5 that it did not parse,
-     and lead step 6 with the document-type question.
+   - `VERDICT: unrecognized` - **stop and ask the document-type question now**, before
+     touching any posting: analysis against a document that did not parse means
+     nothing. Quote what `shape` actually found (the unit count, the headings it saw
+     instead) and ask what the file is, single-select: a resume in a layout this editor
+     cannot parse; a resume in the expected layout after all; not a resume. Never state
+     what you think the document is - `shape` recognizes one shape and cannot identify
+     anything else. Act on the answer per the **Not-a-resume gate**.
 
    The verdict is a document-type check. It is never a quality judgment and never a
-   score - it does not enter the report, and it is never described to the user as a
+   score - it does not enter the summary, and it is never described to the user as a
    rating of their resume.
 
-   **Then run `python3 $SCRIPT doctor canon_resume.odt`.** It confirms this machine
-   can measure page fit: LibreOffice, poppler, and every font canon's text uses. A
-   missing font is as bad as a missing renderer - LibreOffice silently swaps in a
-   fallback with different metrics, and a resume that fits in its own font measures a
-   page long in the substitute.
+4. **Run `python3 $SCRIPT doctor canon_resume.odt`.** It confirms this machine can
+   measure page fit: LibreOffice, poppler, and every font canon's text uses. A missing
+   font is as bad as a missing renderer - LibreOffice silently swaps in a fallback with
+   different metrics, and a resume that fits in its own font measures a page long in
+   the substitute.
    - `OK` - continue, and say nothing about the check.
-   - `Incomplete` - say so now, before any analysis, naming exactly what the output
-     says is missing (a tool, or a font such as Garamond). `check`, `budget`, and
-     `fill` will **fail** rather than pass unmeasured, so ask whether to proceed
-     unverified. Only on an explicit yes does this run pass `--no-page-check` to
-     those commands - never add the flag on your own judgment, and never call a
-     result that used it one page.
+   - `Incomplete` - say so now, naming exactly what the output says is missing (a tool,
+     or a font such as Garamond). `check`, `budget`, and `fill` will **fail** rather
+     than pass unmeasured, so ask whether to proceed unverified. Only on an explicit yes
+     does this batch pass `--no-page-check` to those commands - never add the flag on
+     your own judgment, and never call a result that used it one page.
 
-   **Then resolve `PREFIX`.** If `.output_name` exists, read it and use it as-is - do
-   not ask again, and do not mention it. If it does not exist, **ask in plain prose and
-   stop**: what first and last name should the tailored files be filed under? Never guess
-   it from the git config, the directory path, or a leftover output file, and never fill
+5. **Resolve `PREFIX`.** If `.output_name` exists, read it and use it as-is - do not ask
+   again, and do not mention it. If it does not exist, **ask in plain prose and stop**:
+   what first and last name should the tailored files be filed under? Never guess it
+   from the git config, the directory path, or a leftover output file, and never fill
    canon's `[Name]` token with the answer. If canon carries a real name on its contact
    line rather than a token, you may offer that as the suggested answer, but only as a
-   suggestion to confirm. When they reply, derive `PREFIX` per **Output
-   naming**, write that one line to `.output_name`, and continue - this is asked once per
-   clone. If they decline to name the files, write nothing and use the empty prefix.
-1. **Require the job description.** If one was pasted with the invocation, write it to
-   `jd.txt` and continue. Otherwise check the working directory for `jd.txt` before
-   asking for anything - re-running against the posting already sitting there is common,
-   and making the user paste it a second time is the annoyance this check exists to
-   prevent.
-   - **`jd.txt` exists with content:** quote back the first line or two (whatever names
-     the role and company) and ask whether to tailor against that posting or a new one.
-     **Pause and wait.**
-   - **`jd.txt` is missing, empty, or whitespace only:** ask for the posting. **Pause and
-     wait.** Never fall back to generic ATS advice, and never tailor against a posting
-     recalled from earlier in the conversation instead of one on disk.
-   - **They paste a new posting:** write it to `jd.txt`, replacing what was there, and
-     continue against the new one.
+   suggestion to confirm. When they reply, derive `PREFIX` per **Output naming**, write
+   that one line to `.output_name`, and continue - this is asked once per clone. If they
+   decline to name the files, write nothing and use the empty prefix.
 
-   **Pausing here is not aborting.** The reply resumes this same run at step 2 - the
-   model check, the canon check, the `shape` verdict, and `PREFIX` all still hold from
-   step 0. Nothing is re-run and the user does not re-invoke the skill. Say what is
-   needed, stop talking, and pick up where you left off when it arrives.
-2. Run, against the JD settled at step 1:
-   `python3 $SCRIPT match canon_resume.odt jd.txt`
-   It returns only near-miss and missing terms, and emits no score. **Early exit:** if it
-   reports no actionable gaps, say so and stop - canon already covers this posting.
-   Never take that exit when `shape` said `unrecognized`: a document that parsed to
-   nothing can report the same thing as one that covers everything.
-3. **Sanity-check the rows.** The script misses context a human catches (a requirement
-   phrased as a responsibility, an industry-specific sense of a word). Add what it
-   missed, drop false positives. **Also scan the JD for disqualifiers.**
-4. Run `python3 $SCRIPT extract canon_resume.odt` to see editable units and their ids.
-   Also run `python3 $SCRIPT budget canon_resume.odt` to measure canon before any edits
-   exist. It measures the document **as submitted** - placeholders filled in memory
-   from the map, printing only geometry - because short tokens hide overflow that real
-   values cause. It prints spare lines above the safe buffer, and for every bullet its
-   line count and `+N`: characters that still fit on its last line before it wraps.
-   Those numbers are the length budget for step 8. If it prints `FAIL`, the
-   measurement could not be trusted; relay why and treat the run as unverified per
-   step 0.
-5. **Present the analysis** - near/missing terms and the proposed edits as before/after
-   pairs, framed as what to add, remove, or reword and why. No score. Nothing on disk.
-   If step 4's `budget` run printed `NOTABLE`, mention the unused space plainly
-   alongside the keyword gaps (e.g. "canon currently has about Npt of unused space at
-   the bottom of the page"). A small body font-size nudge in their own editor is one way
-   to use it - say so as a passing suggestion only, never as something this tool does or
-   offers to automate.
-6. **Ask everything in ONE `AskUserQuestion` call**, multi-select grouped by category,
-   never a series of yes/no rounds. Rank by leverage and ask only about what will change
-   the edit set - the change budget means about five edits, so do not surface ten gaps.
-   - **Unclaimed experience** (multiSelect): "Which of these do you actually have
-     experience with, even if it's not on your resume?" Absence from the page is evidence
-     about the page, not the candidate. Invite specifics via the free-text option.
-   - **Removals** (multiSelect): each candidate bullet quoted in full. An unchecked
-     bullet stays. Never drop one silently.
-   - **Near-miss rewording** (multiSelect): approve swaps to the JD's exact phrasing.
-   - **Page space** (multiSelect, only if step 4's `budget` run printed `NOTABLE`):
-     "There's a few lines of unused space at the bottom of the page - want to use it?"
-     Options: add a bullet from confirmed/unclaimed experience, reword an existing
-     bullet to be longer and more detailed, or leave it as-is. Nothing selected means
-     leave the whitespace alone - same never-silently-decide pattern as Removals.
-   - **Suspected disqualifier** (single-select yes/no, only if one exists): kept separate
-     because an unchecked box is indistinguishable from an oversight.
-   - **Document type** (single-select, only if `shape` said `unrecognized`): **ask this
-     first** - it decides whether the rest of the run means anything. Quote what `shape`
-     actually found (the unit count, the headings it saw instead) and ask what the file
-     is. Three answers: a resume in a layout this editor cannot parse; a resume in the
-     expected layout after all; not a resume. Single-select, for the same reason as the
-     disqualifier. Never state what you think the document is - `shape` recognizes one
-     shape and cannot identify anything else, so a guess dressed as a finding is worse
-     than the question.
-7. **Stop and wait.**
+6. **Gather the batch.** In this order:
+   - **Open applications:** `python3 $SCRIPT status`. Anything listed is an unfinished
+     earlier batch; it joins this one at its recorded stage. Mention it in one line.
+   - **Inbox:** if `postings/inbox.txt` has content, run `python3 $SCRIPT split`. It
+     creates one `applications/<today>_posting-NN/` folder per posting, at stage `new`,
+     and empties the inbox.
+   - **A posting pasted in chat:** a single one is fine - write it to
+     `postings/inbox.txt` and `split`. For two or more, ask the user to paste them into
+     the inbox file instead, separated by `=====` lines, and stop: re-typing every
+     posting costs output tokens the file route does not.
+   - **Nothing anywhere:** ask for postings - the inbox file for several, chat for one -
+     and stop. Never fall back to generic ATS advice.
+
+   **Pausing is not aborting.** The reply resumes this same run - the checks above still
+   hold. Nothing is re-run and the user does not re-invoke the skill.
+
+7. **Measure canon once.** `python3 $SCRIPT extract canon_resume.odt` for the editable
+   units and their ids, and `python3 $SCRIPT budget canon_resume.odt` for the length
+   budget. Every application starts from canon, so these hold for the whole batch.
+   `budget` measures the document **as submitted** - placeholders filled in memory from
+   the map, printing only geometry - because short tokens hide overflow that real values
+   cause. It prints spare lines above the safe buffer, and for every bullet its line
+   count and `+N`: characters that still fit on its last line before it wraps. If it
+   prints `FAIL`, the measurement could not be trusted; relay why and treat the batch as
+   unverified per step 4.
+
+8. **Read `experience.md`** if it exists.
 
 ### Not-a-resume gate
 
-Checked before the misalignment gate: if the file is not a resume, there is nothing to
-be misaligned with. Act on the step 6 answer.
+Acted on only when step 3 asked the document-type question.
 
-- **Not a resume.** **Hard stop.** No `.odt` and **no report** - a tailoring report
-  about a document that is not a resume has nothing to say, and writing one would file
-  a job-application artifact for a run that never applied to anything. Say in one
-  message that `canon_resume.odt` is not a resume and has to be replaced with one. Do
-  not offer to write a resume, and do not tailor it anyway if asked to "just try".
-- **A resume in a layout this editor cannot parse.** Also stop, no `.odt`, no report,
-  but the message is different: the document is fine, the editor is the limitation. It
-  edits units under the headings `EDUCATION`, `SKILLS`, `EXPERIENCE`, and `PROJECTS`,
-  and it found the headings `shape` listed instead. Say what renaming would take, and
-  that this is their call to make - **never rewrite their resume's structure to fit the
-  tool.**
+- **Not a resume.** **Hard stop** for the whole batch. No `.odt` and no summary - there
+  is nothing to tailor. Say in one message that `canon_resume.odt` is not a resume and
+  has to be replaced with one. Do not offer to write a resume, and do not tailor it
+  anyway if asked to "just try". Leave the inbox and any split folders as they are.
+- **A resume in a layout this editor cannot parse.** Also stop, same way, but the
+  message is different: the document is fine, the editor is the limitation. It edits
+  units under the headings `EDUCATION`, `SKILLS`, `EXPERIENCE`, and `PROJECTS`, and it
+  found the headings `shape` listed instead. Say what renaming would take, and that this
+  is their call to make - **never rewrite their resume's structure to fit the tool.**
 - **A resume in the expected layout after all.** `shape` is a heuristic and the user's
   answer wins, so continue. But if `shape` reported `0 units`, nothing is editable no
   matter what the document is: say so and stop rather than inventing an edit set
   against text the editor cannot see.
 
-### Misalignment gate
+### Phase 1 - analyze (no questions, nothing tailored)
 
-If a disqualifier was confirmed and not overridden, stop here: no `.odt`, report only.
+For each application at stage `new`:
+
+1. **Read `posting.txt`** and name the folder:
+   `python3 $SCRIPT name <folder> "<Company>" "<Role>"`. It prints the new path - use it
+   from here on. A `DUPLICATE:` line means an earlier application to the same company
+   and role exists; that becomes a consultation question.
+2. **Match:** `python3 $SCRIPT match canon_resume.odt <folder>/posting.txt`. It returns
+   only near-miss and missing terms, and emits no score.
+3. **Sanity-check the rows.** The script misses context a human catches (a requirement
+   phrased as a responsibility, an industry-specific sense of a word). Add what it
+   missed, drop false positives. Then apply the ledger: a `yes` term is usable as
+   confirmed, a `no` term is dropped. **Scan the posting for disqualifiers.**
+4. **Draft the proposal** within the edit budget (Phase 3), sized against step 7's
+   `budget` numbers: before/after pairs for rewordings, candidate removals quoted in
+   full, candidate additions from canon or `yes` ledger entries, and the experience
+   questions this posting raises. Rank by leverage - the budget means about five edits,
+   so do not carry ten gaps.
+5. **Write it to `<folder>/consultation.md`** and `stage <folder> analyzed`. The file is
+   what makes the batch resumable; keep it terse - bullets, the unit ids, the exact
+   before/after text.
+
+If a posting has no actionable gaps and no suspected disqualifier, say so in its
+`consultation.md` ("no changes needed") - it still gets a résumé in Phase 3.
+
+### Phase 2 - consult (one message, then wait)
+
+**Ask everything in ONE plain-text message**, not `AskUserQuestion` - its four-question
+cap cannot hold a batch. Number every item so the user can answer tersely
+(`E1 y, E3 y - ran it in CI at [Company1]; 2.R1 n; D1 n`). Open with how blanks resolve:
+
+- **Rewording** to the posting's exact phrasing: blank = **accepted**.
+- **Removal** of a bullet: blank = **kept**. Never drop one silently.
+- **Experience**: blank = **no** for this batch, and not written to the ledger.
+- **Page space**: blank = leave the whitespace alone.
+- **Disqualifiers and duplicates**: must be answered. Phase 3 does not start until they
+  are - if some are left blank, ask again for just those.
+
+Order of the message:
+
+1. **Disqualifiers** (`D1`, `D2` ...), one yes/no each, naming the posting and quoting
+   the requirement. Never conclude misalignment from the resume alone.
+2. **Duplicates** (`U1` ...): "you applied to <role> at <company> on <date> - apply
+   again?"
+3. **Experience** (`E1` ...), **asked once for the whole batch** - each line names the
+   term and which postings want it. Absence from the page is evidence about the page,
+   not the candidate; invite specifics.
+4. **One block per posting** (`1.`, `2.` ...), headed by company and role: its
+   rewordings (`1.W1` ...) as before/after, removals (`1.R1` ...) quoted in full, and a
+   page-space item (`1.P`) only if step 7's `budget` printed `NOTABLE` - options: add a
+   bullet from confirmed experience, lengthen an existing bullet, or leave it. A
+   posting with no changes gets one line saying so.
+
+If `budget` printed `NOTABLE`, mention the unused space once, near the top (e.g. "canon
+has about Npt of unused space at the bottom of the page"). A small body font-size nudge
+in their own editor is one way to use it - a passing suggestion only, never something
+this tool does.
+
+**Stop and wait.** When the answers arrive:
+
+- Update `experience.md` with every answered experience question.
+- Append each posting's resolved decisions to its `consultation.md`.
+- Disqualified (and not overridden) or duplicate declined:
+  `stage <folder> skipped --note "<why>"`. Everything else: `stage <folder> consulted`.
+
 A gap that consultation *filled* is not a disqualifier - that is the system working.
 
-### Stage 2 - apply
+### Phase 3 - apply (unattended)
 
-8. **Build the edit set** within budget: at most 3 bullet rewordings (each at canon's own
-   bullet length), at most 1 bullet added and 1 dropped, Skills lines and header `.mid` may gain
-   confirmed terms, projects may be reordered to lead with the most relevant. Prefer
-   swapping an existing term for the JD's exact phrasing over adding text - highest
-   value, lowest risk, no length change. If the user opted to fill page space at step 6,
-   spend the existing bullet-add / reword-longer levers toward length instead of only
-   toward keyword swaps - this doesn't raise the budget above, it just gives a reason to
-   use it that way.
+For each application at stage `consulted`, **without pausing**. Work from
+`consultation.md`, not from memory.
 
-   **Line budget.** Size every edit against step 4's `budget` output, not by eye. A
-   reworded bullet may grow by at most its own `+N` characters, minus a few for
-   safety, unless canon has spare lines to spend; an added bullet costs its full line
-   count. The total lines added may not exceed canon's spare lines - `check` fails the
-   edit set if they do. When a wanted phrase would cost a line, trim elsewhere in the
-   same bullet rather than letting it wrap.
-9. `python3 $SCRIPT apply canon_resume.odt edits.json -o <PREFIX>_Resume.odt`
+**No changes needed:** copy `canon_resume.odt` to `<folder>/<PREFIX>_Resume.odt` and go
+straight to fill.
+
+**Otherwise, build the edit set** within budget: at most 3 bullet rewordings (each at
+canon's own bullet length), at most 1 bullet added and 1 dropped, Skills lines and
+header `.mid` may gain confirmed terms, projects may be reordered to lead with the most
+relevant. Prefer swapping an existing term for the posting's exact phrasing over adding
+text - highest value, lowest risk, no length change. If the user opted to fill page
+space, spend the bullet-add / reword-longer levers toward length - this doesn't raise
+the budget, it just gives a reason to use it that way.
+
+**Line budget.** Size every edit against Phase 0's `budget` output, not by eye. A
+reworded bullet may grow by at most its own `+N` characters, minus a few for safety,
+unless canon has spare lines to spend; an added bullet costs its full line count. The
+total lines added may not exceed canon's spare lines - `check` fails the edit set if
+they do. When a wanted phrase would cost a line, trim elsewhere in the same bullet
+rather than letting it wrap.
+
+1. Write `<folder>/edits.json`, then
+   `python3 $SCRIPT apply canon_resume.odt <folder>/edits.json -o <folder>/<PREFIX>_Resume.odt`.
    Canon is never modified. Edit-set shape:
    ```json
    {"replace": {"exp1.b2": "...", "proj1.head.mid": "| TypeScript, React, Node.js"},
@@ -324,51 +414,60 @@ A gap that consultation *filled* is not a disqualifier - that is the system work
     "insert_after": {"exp1.b1": ["new bullet"]},
     "reorder_projects": ["Cattle Disease Detection", "Cryptography Demo", "Tetris Clone"]}
    ```
-10. `python3 $SCRIPT check canon_resume.odt <PREFIX>_Resume.odt`
-    Fails on voice violations, >1 page, bottom-margin overflow, edits that add more
-    lines than canon has spare, or a parse regression - all measured on the document
-    as submitted. It also prints each changed bullet's line count before and after,
-    and warns when one ends within a few characters of wrapping. Revise and re-run
-    until clean. Show the new/changed bullets in your message.
-    **It fails, rather than skips, when page fit cannot be measured** (no renderer, or
-    a font substituted). Add `--no-page-check` only if the user agreed at step 0 to
-    proceed unverified; an `OK` under that flag means the voice lint passed and
-    nothing else did, so never call that result verified or one page.
-11. **Write `<PREFIX>_ATS_Report.md`**, reading
-    `references/report-template.md` at this point and not before. Keep it terse - tables,
-    not prose. Report tokens are the most expensive in the run. The report describes the
-    tokenized resume and never contains a filled value.
-12. **Fill the placeholders.** Run it directly - do not first test whether the map
-    exists, because every route to that filename is denied to you and the command
-    reports the answer itself:
+2. `python3 $SCRIPT check canon_resume.odt <folder>/<PREFIX>_Resume.odt`. Fails on voice
+   violations, >1 page, bottom-margin overflow, edits that add more lines than canon has
+   spare, or a parse regression - all measured on the document as submitted. It also
+   prints each changed bullet's line count before and after, and warns when one ends
+   within a few characters of wrapping. On failure, revise the edit set and re-run.
+   **It fails, rather than skips, when page fit cannot be measured.** Add
+   `--no-page-check` only under the Phase 0 agreement; an `OK` under that flag means the
+   voice lint passed and nothing else did. On a pass, `stage <folder> applied`.
+3. **Fill.** Run it directly - do not first test whether the map exists, because every
+   route to that filename is denied to you and the command reports the answer itself:
 
-    `python3 $SCRIPT fill <PREFIX>_Resume.odt -o <PREFIX>_Resume_filled.odt`
+   `python3 $SCRIPT fill <folder>/<PREFIX>_Resume.odt -o <folder>/<PREFIX>_Resume_filled.odt`
 
-    It reads `pii.txt` from the working directory, substitutes every `[Token]`, and
-    prints only token names, counts, how many characters wider each token became, and
-    page geometry. Pass `--no-page-check` only under the step 0 agreement. Three
-    outcomes:
-    - **`OK - no placeholders remain`** - relay the page numbers and say the filled copy
-      is the one to submit. `<PREFIX>_Resume.odt` keeps its tokens and is the copy that
-      can be committed.
-    - **`fill: pii.txt not found`** - say that the map does not exist yet, point at the
-      schema in the README, and stop. Never create it, never offer to, and never ask for
-      the values so you can write them.
-    - **`FAIL:`** - a token has no mapping, the real values pushed the document past
-      one page, or page fit could not be measured. Relay the exact lines; in every case
-      nothing is written. An unmapped token means the map is incomplete: say which
-      token, and stop. An overflow means a bullet edit back at step 8 - the `width`
-      line says which tokens grew the most - then re-run steps 9 to 12.
+   It reads `pii.txt`, substitutes every `[Token]`, and prints only token names, counts,
+   how many characters wider each token became, and page geometry. Pass
+   `--no-page-check` only under the Phase 0 agreement.
+   - **`OK - no placeholders remain`** - `stage <folder> filled`.
+   - **`fill: pii.txt not found`** - the map does not exist, so no application in the
+     batch can be filled. Stop filling, leave each at `applied`, and say so in the
+     summary, pointing at the schema in the README. Never create the map, never offer
+     to, and never ask for the values.
+   - **`FAIL:`** - an unmapped token stops filling for the whole batch the same way
+     (name the token). An overflow means the real values are longer than the tokens:
+     trim an edit (the `width` line says which tokens grew most) and redo steps 1-3.
 
-    Never open the filled file afterward. `fill`'s own output is the verification.
-13. **Offer canon write-back** if consultation surfaced something permanently true.
-    Opt-in, asked once, never automatic.
+   Never open the filled file afterward. `fill`'s own output is the verification.
 
-Both outputs overwrite each run; git history is the per-job archive. Always start from
-`canon_resume.odt`, never from a previous output, so tailoring never compounds.
+**Never pause the batch.** Revise and retry on your own; if an application still fails
+after three attempts at the same step, `stage <folder> needs-you --note "<what failed>"`
+and move to the next. Its edits and the exact failure go on the summary's "Needs you"
+list.
+
+### Phase 4 - wrap up
+
+1. **Write `applications/<batch>_batch-summary.md`**, reading
+   `references/batch-summary-template.md` at this point and not before. If that file
+   exists from an earlier batch the same day, add `-2`. `python3 $SCRIPT status --batch
+   <batch>` lists what to cover. Keep it terse - tables, not prose; summary tokens are
+   the most expensive in the run. It describes tokenized résumés and never contains a
+   filled value.
+2. **Reply in chat** with only: how many applications are `filled` (ready to submit,
+   with their folders), anything `skipped`, and the "Needs you" list. Point at the
+   summary for the rest.
+3. **Offer canon write-back once**, if consultation surfaced something that belongs on
+   the page permanently - list every such item from the whole batch in that one offer.
+   Opt-in, never automatic. Most confirmed experience belongs in the ledger only.
+
+Always tailor from `canon_resume.odt`, never from a previous output, so tailoring never
+compounds.
 
 ## Cost
 
-Runs dozens of times a week. The script does all mechanical work at zero token cost;
-`match` returns only interesting rows. Keep the report terse, take the early exit when it
-applies, and read the report template only at step 11.
+Runs dozens of times a week, 10+ postings at a sitting. The script does all mechanical
+work at zero token cost; `match` returns only interesting rows. Canon is extracted and
+measured once per batch, not once per posting. Postings arrive through the inbox file
+rather than being re-typed. Keep `consultation.md` and the summary terse, and read the
+summary template only in Phase 4.

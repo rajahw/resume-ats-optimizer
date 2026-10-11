@@ -6,6 +6,14 @@ jd*.txt
 job-description*
 postings/
 
+# One folder per application: the posting, edit set, and tailored resumes. The
+# folders are the archive of past applications - see docs/adr/0001.
+applications/
+
+# The Experience ledger: what the user confirmed or denied in past consultations.
+# Tokens only, but it is still a private record of their background.
+experience.md
+
 # The real identity values behind canon's [Token]s, read only by `fill`. This
 # is the file the whole placeholder scheme exists to keep out of git, and a
 # PreToolUse hook blocks Claude from reading it at all.
