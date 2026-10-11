@@ -182,6 +182,19 @@ they say proceed, tailor normally and note it in the report.
    score - it does not enter the report, and it is never described to the user as a
    rating of their resume.
 
+   **Then run `python3 $SCRIPT doctor canon_resume.odt`.** It confirms this machine
+   can measure page fit: LibreOffice, poppler, and every font canon's text uses. A
+   missing font is as bad as a missing renderer - LibreOffice silently swaps in a
+   fallback with different metrics, and a resume that fits in its own font measures a
+   page long in the substitute.
+   - `OK` - continue, and say nothing about the check.
+   - `Incomplete` - say so now, before any analysis, naming exactly what the output
+     says is missing (a tool, or a font such as Garamond). `check`, `budget`, and
+     `fill` will **fail** rather than pass unmeasured, so ask whether to proceed
+     unverified. Only on an explicit yes does this run pass `--no-page-check` to
+     those commands - never add the flag on your own judgment, and never call a
+     result that used it one page.
+
    **Then resolve `PREFIX`.** If `.output_name` exists, read it and use it as-is - do
    not ask again, and do not mention it. If it does not exist, **ask in plain prose and
    stop**: what first and last name should the tailored files be filed under? Never guess
@@ -219,10 +232,14 @@ they say proceed, tailor normally and note it in the report.
    phrased as a responsibility, an industry-specific sense of a word). Add what it
    missed, drop false positives. **Also scan the JD for disqualifiers.**
 4. Run `python3 $SCRIPT extract canon_resume.odt` to see editable units and their ids.
-   Also run `python3 $SCRIPT budget canon_resume.odt` to measure canon's current page
-   fill before any edits exist - this is separate from `check`'s post-edit margin line
-   at step 10, and exists so loose whitespace can be raised during consultation instead
-   of only reported after the fact.
+   Also run `python3 $SCRIPT budget canon_resume.odt` to measure canon before any edits
+   exist. It measures the document **as submitted** - placeholders filled in memory
+   from the map, printing only geometry - because short tokens hide overflow that real
+   values cause. It prints spare lines above the safe buffer, and for every bullet its
+   line count and `+N`: characters that still fit on its last line before it wraps.
+   Those numbers are the length budget for step 8. If it prints `FAIL`, the
+   measurement could not be trusted; relay why and treat the run as unverified per
+   step 0.
 5. **Present the analysis** - near/missing terms and the proposed edits as before/after
    pairs, framed as what to add, remove, or reword and why. No score. Nothing on disk.
    If step 4's `budget` run printed `NOTABLE`, mention the unused space plainly
@@ -292,6 +309,13 @@ A gap that consultation *filled* is not a disqualifier - that is the system work
    spend the existing bullet-add / reword-longer levers toward length instead of only
    toward keyword swaps - this doesn't raise the budget above, it just gives a reason to
    use it that way.
+
+   **Line budget.** Size every edit against step 4's `budget` output, not by eye. A
+   reworded bullet may grow by at most its own `+N` characters, minus a few for
+   safety, unless canon has spare lines to spend; an added bullet costs its full line
+   count. The total lines added may not exceed canon's spare lines - `check` fails the
+   edit set if they do. When a wanted phrase would cost a line, trim elsewhere in the
+   same bullet rather than letting it wrap.
 9. `python3 $SCRIPT apply canon_resume.odt edits.json -o <PREFIX>_Resume.odt`
    Canon is never modified. Edit-set shape:
    ```json
@@ -301,13 +325,15 @@ A gap that consultation *filled* is not a disqualifier - that is the system work
     "reorder_projects": ["Cattle Disease Detection", "Cryptography Demo", "Tetris Clone"]}
    ```
 10. `python3 $SCRIPT check canon_resume.odt <PREFIX>_Resume.odt`
-    Fails on voice violations, >1 page, bottom-margin overflow, or a parse regression.
-    Revise and re-run until clean. Show the new/changed bullets in your message.
-    **If it warns that page and parse checks were SKIPPED**, this machine has no
-    LibreOffice or poppler, and nothing about page count, margins, or parse
-    safety was measured. Relay that, name what the warning says is missing, and
-    do not call the result verified or say it fits one page - an `OK` that
-    carries that warning means the voice lint passed and nothing else did.
+    Fails on voice violations, >1 page, bottom-margin overflow, edits that add more
+    lines than canon has spare, or a parse regression - all measured on the document
+    as submitted. It also prints each changed bullet's line count before and after,
+    and warns when one ends within a few characters of wrapping. Revise and re-run
+    until clean. Show the new/changed bullets in your message.
+    **It fails, rather than skips, when page fit cannot be measured** (no renderer, or
+    a font substituted). Add `--no-page-check` only if the user agreed at step 0 to
+    proceed unverified; an `OK` under that flag means the voice lint passed and
+    nothing else did, so never call that result verified or one page.
 11. **Write `<PREFIX>_ATS_Report.md`**, reading
     `references/report-template.md` at this point and not before. Keep it terse - tables,
     not prose. Report tokens are the most expensive in the run. The report describes the
@@ -319,18 +345,20 @@ A gap that consultation *filled* is not a disqualifier - that is the system work
     `python3 $SCRIPT fill <PREFIX>_Resume.odt -o <PREFIX>_Resume_filled.odt`
 
     It reads `pii.txt` from the working directory, substitutes every `[Token]`, and
-    prints only token names, counts, and page geometry. Three outcomes:
+    prints only token names, counts, how many characters wider each token became, and
+    page geometry. Pass `--no-page-check` only under the step 0 agreement. Three
+    outcomes:
     - **`OK - no placeholders remain`** - relay the page numbers and say the filled copy
       is the one to submit. `<PREFIX>_Resume.odt` keeps its tokens and is the copy that
       can be committed.
     - **`fill: pii.txt not found`** - say that the map does not exist yet, point at the
       schema in the README, and stop. Never create it, never offer to, and never ask for
       the values so you can write them.
-    - **`FAIL:`** - a token has no mapping, or the real values pushed the document past
-      one page. Relay the exact lines. An unmapped token means the map is incomplete and
-      nothing is written: say which token, and stop. An overflow means the file was
-      written but does not fit, so it must not be submitted as is; the fix is a bullet
-      edit back at step 8, then re-run steps 9 to 12.
+    - **`FAIL:`** - a token has no mapping, the real values pushed the document past
+      one page, or page fit could not be measured. Relay the exact lines; in every case
+      nothing is written. An unmapped token means the map is incomplete: say which
+      token, and stop. An overflow means a bullet edit back at step 8 - the `width`
+      line says which tokens grew the most - then re-run steps 9 to 12.
 
     Never open the filled file afterward. `fill`'s own output is the verification.
 13. **Offer canon write-back** if consultation surfaced something permanently true.

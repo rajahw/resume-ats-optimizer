@@ -62,12 +62,22 @@ from a repository you have only downloaded — so this stays a one-time opt-in. 
 is safe. To re-check the renderers alone:
 
 ```bash
-python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py doctor
+python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py doctor canon_resume.odt
 ```
 
 Requires `python3`. Rendering — the step that verifies one page, the bottom
 margin, and text recoverability — additionally needs LibreOffice and poppler's
-`pdftotext` and `pdfinfo`.
+`pdftotext`, `pdfinfo`, and `pdffonts` (Fedora: `dnf install libreoffice-writer
+poppler-utils`; Debian/Ubuntu: `apt install libreoffice-writer poppler-utils`;
+macOS: `brew install --cask libreoffice && brew install poppler`).
+
+**Every font your résumé uses must be installed too.** LibreOffice silently
+substitutes a missing font with one of different width, so a résumé that fits in
+Garamond measures a page long in the fallback. `doctor canon_resume.odt` names any
+font the render had to substitute, and `check`, `budget`, and `fill` refuse to
+report a page measurement taken with the wrong font. Fonts that ship with Microsoft
+Office (Garamond, Calibri, Aptos) are not on Linux by default: copy the font files
+into `~/.local/share/fonts`, or set the résumé in a font this machine has.
 
 LibreOffice is found wherever this machine keeps it: `soffice` or `libreoffice`
 on `PATH` (any package install), then `/Applications/LibreOffice.app` on macOS
@@ -75,8 +85,16 @@ and `C:\Program Files\LibreOffice` on Windows, then a Flatpak
 `org.libreoffice.LibreOffice`. Nothing is hardcoded to one platform.
 
 Without those, the tool still runs — `match`, `extract`, `apply`, and the voice
-lint are pure Python — but `check` and `budget` say so and skip the page and
-parse verification rather than claiming a result they did not measure.
+lint are pure Python — but `check`, `budget`, and `fill` **fail** rather than pass
+unmeasured. `--no-page-check` on `check` and `fill` accepts an unverified result
+explicitly, and the output still says SKIPPED.
+
+Page fit is measured on the résumé **as submitted**: when `pii.txt` exists, the
+placeholders are filled in memory, rendered from a staging copy under
+`~/.cache/odt_text`, and deleted, so short tokens cannot hide overflow that real
+values cause. `budget` prints spare lines and, per bullet, how many characters fit
+before its last line wraps; `check` fails an edit set that adds more lines than
+canon had spare.
 
 ## Platform support
 
@@ -104,9 +122,9 @@ interpreter is found, `hooks/guard.sh` exits 2 and blocks the call, and the pre-
 shim blocks the commit. A guard that could not run is never mistaken for one that
 allowed.
 
-Poppler (`pdftotext`, `pdfinfo`) is the piece Windows makes least convenient; without
-it you keep everything except the page and parse verification, and `check` says loudly
-which parts it did not measure.
+Poppler (`pdftotext`, `pdfinfo`, `pdffonts`) is the piece Windows makes least
+convenient; without it you keep everything except the page and parse verification,
+and `check` fails unless you pass `--no-page-check` to accept that.
 
 ## Use
 
@@ -284,5 +302,5 @@ What *is* verifiable is checked: `check` runs `pdftotext` — the same text-extr
 a parser performs — and asserts every section is recoverable in reading order, the page
 count is 1, content stays inside the bottom margin, and no punctuation, character, or
 boilerplate phrase foreign to your own résumé crept into the bullets that changed. On a machine
-without LibreOffice or poppler it says loudly that the page and parse half was skipped,
+without LibreOffice, poppler, or the résumé's own fonts it fails instead of passing,
 so an `OK` never stands in for a measurement that did not happen.

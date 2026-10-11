@@ -20,6 +20,12 @@ m = helpers.load_odt_text()
 SCRIPT = os.path.join(helpers.SCRIPTS, "odt_text.py")
 
 
+def fake_layout(pages=1, last=500.0, lines=(), subs=()):
+    """What render_layout() returns, minus a renderer."""
+    return {"pages": pages, "last": last, "lines": list(lines),
+            "flat": "EDUCATION SKILLS EXPERIENCE PROJECTS", "substitutes": list(subs)}
+
+
 class TempCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="odt-test-")
@@ -34,6 +40,15 @@ class TempCase(unittest.TestCase):
     def run_cli(self, *args):
         return subprocess.run([sys.executable, SCRIPT] + list(args),
                               capture_output=True, text=True)
+
+    def run_stubbed(self, patch, *args):
+        """Run the CLI with one line of monkeypatching applied first."""
+        stub = self.path("stub.py")
+        with open(stub, "w", encoding="utf-8") as fh:
+            fh.write("import sys\nsys.path.insert(0, %r)\nimport odt_text\n%s\n"
+                     "sys.argv = ['odt_text'] + %r\nodt_text.main()\n"
+                     % (helpers.SCRIPTS, patch, list(args)))
+        return subprocess.run([sys.executable, stub], capture_output=True, text=True)
 
 
 class TestNormalize(TempCase):
@@ -161,7 +176,8 @@ class TestTokens(TempCase):
         values = dict(helpers.FAKE_VALUES)
         values.pop("[Phone]", None)
         mp = helpers.write_map(self.path("map.txt"), values)
-        res = self.run_cli("fill", src, "--map", mp, "-o", self.path("o_filled.odt"))
+        res = self.run_cli("fill", src, "--map", mp, "-o", self.path("o_filled.odt"),
+                           "--no-page-check")
         self.assertNotEqual(res.returncode, 0,
                             "an unmapped token slipped through as OK")
         self.assertIn("[Work_Phone]", res.stdout)
@@ -172,7 +188,7 @@ class TestFill(TempCase):
         src = self.odt()
         mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
         out = self.path("o_filled.odt")
-        res = self.run_cli("fill", src, "--map", mp, "-o", out)
+        res = self.run_cli("fill", src, "--map", mp, "-o", out, "--no-page-check")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn("[ProjectRepo]", res.stdout)
         content = m.read_content(out)
@@ -190,7 +206,7 @@ class TestFill(TempCase):
         values["[ProjectRepo]"] = 'https://example.com/a"b'
         mp = helpers.write_map(self.path("map.txt"), values)
         out = self.path("o_filled.odt")
-        res = self.run_cli("fill", src, "--map", mp, "-o", out)
+        res = self.run_cli("fill", src, "--map", mp, "-o", out, "--no-page-check")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         ET.fromstring(m.read_content(out))
 
@@ -200,7 +216,7 @@ class TestFill(TempCase):
         values["[ProjectRepo]"] = "https://example.com/?a=1&b=2"
         mp = helpers.write_map(self.path("map.txt"), values)
         out = self.path("o_filled.odt")
-        res = self.run_cli("fill", src, "--map", mp, "-o", out)
+        res = self.run_cli("fill", src, "--map", mp, "-o", out, "--no-page-check")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         root = ET.fromstring(m.read_content(out))
         hrefs = [v for e in root.iter() for k, v in e.attrib.items()
@@ -212,19 +228,53 @@ class TestFill(TempCase):
         src = self.odt()
         mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
         out = self.path("o_filled.odt")
-        stub = self.path("stub.py")
-        with open(stub, "w", encoding="utf-8") as fh:
-            fh.write(
-                "import sys\n"
-                "sys.path.insert(0, %r)\n"
-                "import odt_text\n"
-                "odt_text.measure_page_budget = lambda p: (2, 900.0, None)\n"
-                "sys.argv = ['odt_text', 'fill', %r, '--map', %r, '-o', %r]\n"
-                "odt_text.main()\n" % (helpers.SCRIPTS, src, mp, out))
-        res = subprocess.run([sys.executable, stub], capture_output=True, text=True)
+        res = self.run_stubbed(
+            "odt_text.render_layout = lambda p: %r" % fake_layout(pages=2, last=900.0),
+            "fill", src, "--map", mp, "-o", out)
         self.assertNotEqual(res.returncode, 0, "a 2-page fill was reported as OK")
         self.assertFalse(os.path.exists(out),
                          "rejected fill left a filled resume on disk")
+
+    def test_no_renderer_fails_and_writes_nothing(self):
+        """An unmeasured fill is how a two-page resume got submitted."""
+        src = self.odt()
+        mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
+        out = self.path("o_filled.odt")
+        res = self.run_stubbed("odt_text.render_layout = lambda p: None",
+                               "fill", src, "--map", mp, "-o", out)
+        self.assertNotEqual(res.returncode, 0, "an unmeasured fill passed")
+        self.assertIn("--no-page-check", res.stdout)
+        self.assertFalse(os.path.exists(out))
+
+    def test_no_page_check_accepts_an_unmeasured_fill_loudly(self):
+        src = self.odt()
+        mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
+        out = self.path("o_filled.odt")
+        res = self.run_stubbed("odt_text.render_layout = lambda p: None",
+                               "fill", src, "--map", mp, "-o", out, "--no-page-check")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("SKIPPED", res.stdout)
+        self.assertTrue(os.path.exists(out))
+
+    def test_substituted_font_fails_the_fill(self):
+        src = self.odt()
+        mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
+        out = self.path("o_filled.odt")
+        res = self.run_stubbed(
+            "odt_text.render_layout = lambda p: %r" % fake_layout(subs=["NotoSerif"]),
+            "fill", src, "--map", mp, "-o", out)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("NotoSerif", res.stdout)
+        self.assertFalse(os.path.exists(out))
+
+    def test_width_report_gives_lengths_never_values(self):
+        src = self.odt()
+        mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
+        res = self.run_cli("fill", src, "--map", mp, "-o", self.path("o_filled.odt"),
+                           "--no-page-check")
+        self.assertIn("[Name] %+d" % (len("Ada Lovelace") - len("[Name]")), res.stdout)
+        for value in helpers.FAKE_VALUES.values():
+            self.assertNotIn(value, res.stdout)
 
 
 class TestRenderCleanup(TempCase):
@@ -292,6 +342,72 @@ class TestWriteOdt(TempCase):
             self.assertEqual(infos[0].filename, "mimetype")
             self.assertEqual(infos[0].compress_type, zipfile.ZIP_STORED)
             self.assertIsNone(z.testzip())
+
+
+def line(text, x0, x1, y, page=1):
+    return {"text": text, "xMin": x0, "xMax": x1, "yMin": y, "yMax": y + 12, "page": page}
+
+
+class TestLineBudget(TempCase):
+    def test_counts_lines_and_slack_per_bullet(self):
+        lines = [line("Alpha beta gamma", 54, 570, 100),
+                 line("delta epsilon.", 72, 200, 113),
+                 line("Second bullet.", 54, 150, 126)]
+        geo = m.bullet_geometry(lines, [("b1", "Alpha beta gamma delta epsilon."),
+                                        ("b2", "Second bullet.")], 576.0)
+        self.assertEqual(geo["b1"][0], 2)
+        self.assertEqual(geo["b2"][0], 1)
+        self.assertGreater(geo["b1"][1], 0, "a short last line has room left")
+
+    def test_full_last_line_has_no_slack(self):
+        geo = m.bullet_geometry([line("Ends at the margin.", 54, 576, 100)],
+                                [("b1", "Ends at the margin.")], 576.0)
+        self.assertEqual(geo["b1"], (1, 0))
+
+    def test_ligatures_still_match(self):
+        geo = m.bullet_geometry([line("Joined ACME's \ufb01rst team.", 54, 300, 100)],
+                                [("b1", "Joined ACME's first team.")], 576.0)
+        self.assertIn("b1", geo)
+
+
+class TestCheckGate(TempCase):
+    def _edited(self):
+        import json
+        src = self.odt()
+        epath = self.path("edits.json")
+        with open(epath, "w", encoding="utf-8") as fh:
+            json.dump({"replace": {"exp1.b1": "Plain bullet carrying no inline markup "
+                                   "and a good deal more text than before."}}, fh)
+        out = self.path("out.odt")
+        self.assertEqual(self.run_cli("apply", src, epath, "-o", out).returncode, 0)
+        return src, out
+
+    def test_no_renderer_fails_check(self):
+        src, out = self._edited()
+        res = self.run_stubbed("odt_text.render_layout = lambda p: None",
+                               "check", src, out, "--map", self.path("none.txt"))
+        self.assertNotEqual(res.returncode, 0, "an unmeasured check said OK")
+
+    def test_no_page_check_passes_with_a_skip_warning(self):
+        src, out = self._edited()
+        res = self.run_stubbed("odt_text.render_layout = lambda p: None",
+                               "check", src, out, "--map", self.path("none.txt"),
+                               "--no-page-check")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("SKIPPED", res.stdout)
+
+    def test_added_line_without_spare_room_fails(self):
+        src, out = self._edited()
+        # Output is rendered first, then canon. Canon sits at the safe buffer
+        # with two lines; the output renders three.
+        three = [line("x", 54, 60, 724)] * 3
+        two = [line("x", 54, 60, 724)] * 2
+        patch = ("_n = iter([%r, %r])\nodt_text.render_layout = lambda p: next(_n)"
+                 % (fake_layout(last=736.0, lines=three),
+                    fake_layout(last=736.0, lines=two)))
+        res = self.run_stubbed(patch, "check", src, out, "--map", self.path("none.txt"))
+        self.assertNotEqual(res.returncode, 0, res.stdout)
+        self.assertIn("add 1 line", res.stdout)
 
 
 class TestShape(TempCase):

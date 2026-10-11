@@ -13,9 +13,9 @@ Commands:
   match      classify job-description terms against the resume (no scoring)
   apply      apply an edit set (replace / delete / insert_after / reorder_projects)
   check      verify an output against canon: diff, voice lint, page budget, parse
-  budget     measure a single resume's current page fill (pages, bottom-margin slack)
+  budget     measure a resume as submitted: pages, spare lines, per-bullet wrap slack
   fill       replace [Token] placeholders from a local pii.txt into a *_filled copy
-  doctor     report which optional renderers this machine has
+  doctor     report whether this machine can measure pages (and a resume's fonts)
 
 `fill` is the one command that handles real identity values. It reads the map
 itself and prints only token names and counts, never a value, so the command can
@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import zipfile
 
 # ---------------------------------------------------------------- constants
@@ -42,6 +43,14 @@ RIGHT_TAB_STYLE = "PRA"          # generated automatic style carrying the right 
 DEFAULT_TEXT_WIDTH_IN = 7.5
 DEFAULT_BOTTOM_LIMIT_PT = 756.0
 SAFE_RESERVE_PT = 18.0           # 0.25in of slack before the bottom margin
+NEAR_WRAP_CHARS = 6              # a changed bullet this close to wrapping gets a warning
+
+# Fonts the renderer brings in on its own: LibreOffice draws list bullets from
+# OpenSymbol whatever the document's font is.
+RENDERER_OWN_FONTS = ("opensymbol",)
+
+# Every external tool a page measurement needs besides LibreOffice itself.
+POPPLER_TOOLS = ("pdfinfo", "pdftotext", "pdffonts")
 
 # Phrases that read as generated boilerplate rather than as something a person
 # wrote. A phrase canon already uses is exempt at lint time: the user's own
@@ -956,7 +965,7 @@ def find_soffice():
 def render_unavailable_reason():
     """Why a render could not happen, phrased for a user-facing warning."""
     missing = [] if find_soffice() else ["LibreOffice"]
-    missing += [t for t in ("pdfinfo", "pdftotext") if not shutil.which(t)]
+    missing += [t for t in POPPLER_TOOLS if not shutil.which(t)]
     if missing:
         return "not installed: " + ", ".join(missing)
     return "conversion failed"
@@ -999,47 +1008,243 @@ def to_pdf(odt):
             shutil.rmtree(out, ignore_errors=True)
 
 
-def measure_page_budget(odt_path):
-    """Render odt_path to PDF and return (pages, last_yMax, pdf_path), or
-    (None, None, None) if PDF conversion is unavailable. last_yMax is the
-    deepest bottom edge of any text box on the page, in points. The caller
-    owns pdf_path's containing directory and must clean it up."""
+def _font_key(name):
+    return re.sub(r"[\s_'\"-]", "", name).lower()
+
+
+def document_fonts(path):
+    """Font names the document's styles ask for."""
+    with zipfile.ZipFile(path) as z:
+        xml = z.read("styles.xml").decode("utf-8") + z.read("content.xml").decode("utf-8")
+    return {plain(unesc(n)).strip("'\"")
+            for n in re.findall(r'style:font-name="([^"]+)"', xml)}
+
+
+def missing_fonts(path):
+    """Fonts the document names that this machine would substitute, per
+    fc-match. None when fc-match is not available to ask."""
+    if not shutil.which("fc-match"):
+        return None
+    missing = []
+    for font in sorted(document_fonts(path)):
+        got = subprocess.run(["fc-match", "-f", "%{family}", font],
+                             capture_output=True, text=True).stdout
+        if _font_key(font) not in [_font_key(f) for f in got.split(",")]:
+            missing.append(font)
+    return missing
+
+
+def substituted_fonts(path, pdf):
+    """Fonts in the render that the document never asked for.
+
+    A font the document names but this machine lacks is silently swapped for
+    a fallback with different metrics, and every page number measured from
+    that render is wrong - a Garamond resume set in Noto Serif runs a page
+    long. Comparing what was embedded against what was asked catches it.
+    """
+    asked = [_font_key(f) for f in document_fonts(path)]
+    if not asked:
+        return []  # nothing named, so the renderer's default is the font
+    out = subprocess.run(["pdffonts", pdf], capture_output=True, text=True).stdout
+    subs = set()
+    for line in out.splitlines()[2:]:
+        if not line.strip():
+            continue
+        family = line.split()[0].split("+", 1)[-1].split("-")[0]
+        key = _font_key(family)
+        if key in RENDERER_OWN_FONTS:
+            continue
+        if not any(a and (key.startswith(a) or a.startswith(key)) for a in asked):
+            subs.add(family)
+    return sorted(subs)
+
+
+def _squash(text):
+    """Whitespace-free, compatibility-normalized: PDF text may carry
+    ligatures and breaks a line wherever it wraps."""
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
+
+
+def render_layout(odt_path):
+    """Render odt_path and measure it, or None if no renderer is available.
+
+    Returns pages, the deepest text edge (`last`, points), every text line in
+    reading order with its box and page, the flat text a parser would extract,
+    and any substituted fonts. The PDF is deleted before this returns.
+    """
     pdf = to_pdf(odt_path)
     if not pdf:
-        return None, None, None
+        return None
     try:
-        info = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
-        bbox = subprocess.run(["pdftotext", "-bbox-layout", pdf, "-"],
-                              capture_output=True, text=True).stdout
+        def run(*argv):
+            return subprocess.run(list(argv), capture_output=True, text=True).stdout
+        info = run("pdfinfo", pdf)
+        bbox = run("pdftotext", "-bbox-layout", pdf, "-")
+        flat = run("pdftotext", "-layout", pdf, "-")
+        subs = substituted_fonts(odt_path, pdf)
     except OSError:
+        return None
+    finally:
         shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
-        return None, None, None
+
+    lines = []
+    for page_no, page in enumerate(re.findall(r"<page\b.*?</page>", bbox, re.S), 1):
+        for attrs, inner in re.findall(r"<line ([^>]*)>(.*?)</line>", page, re.S):
+            box = dict((k, float(v)) for k, v in re.findall(r'(\w+)="([\d.]+)"', attrs))
+            words = [plain(unesc(w))
+                     for w in re.findall(r"<word[^>]*>(.*?)</word>", inner, re.S)]
+            box.update(text=" ".join(words), page=page_no)
+            lines.append(box)
     pages = int(re.search(r"Pages:\s+(\d+)", info).group(1))
-    ys = [float(y) for y in re.findall(r'yMax="([\d.]+)"', bbox)]
-    last = max(ys) if ys else None
-    return pages, last, pdf
+    return {"pages": pages,
+            "last": max([l["yMax"] for l in lines] or [0.0]) or None,
+            "lines": lines, "flat": flat, "substitutes": subs}
+
+
+def bullet_geometry(lines, bullets, right_edge):
+    """{uid: (line_count, chars_free)} for each bullet found in the render.
+
+    chars_free is how many more characters fit on the bullet's last line
+    before it wraps onto a new one, at that bullet's own average glyph width.
+    """
+    joined, owner = [], []
+    for i, line in enumerate(lines):
+        s = _squash(line["text"])
+        joined.append(s)
+        owner += [i] * len(s)
+    joined = "".join(joined)
+    geo, pos = {}, 0
+    for uid, text in bullets:
+        s = _squash(text)
+        at = joined.find(s, pos) if s else -1
+        if at < 0:
+            continue
+        pos = at + len(s)
+        first, last = owner[at], owner[pos - 1]
+        span = lines[first:last + 1]
+        per_char = sum(l["xMax"] - l["xMin"] for l in span) / len(s)
+        free = int((right_edge - span[-1]["xMax"]) / per_char) if per_char else 0
+        geo[uid] = (last - first + 1, max(free, 0))
+    return geo
+
+
+def fill_text(text, mapping):
+    """Plain unit text with its placeholders swapped, for matching a render."""
+    if not mapping:
+        return text
+    return TOKEN_RE.sub(lambda m: mapping.get(m.group(0), m.group(0)), text)
+
+
+def load_map(path, content):
+    """The identity map if one exists, else None. Values never leave here
+    except into a render staged under RENDER_CACHE."""
+    if not path or not os.path.exists(path):
+        return None
+    apostrophe = canon_conventions(content)["forms"].get("apostrophe", (None,))[0]
+    return read_pii_map(path, apostrophe=apostrophe)
+
+
+def render_as_submitted(odt_path, mapping):
+    """render_layout() of the document as it would be submitted.
+
+    With a mapping, the placeholders are filled in memory and the filled copy
+    is staged under RENDER_CACHE only for the length of the render. Measuring
+    the tokenized document instead is how a resume that "fit" ran to two pages
+    once `fill` swapped short tokens for long real values.
+    """
+    if not mapping:
+        return render_layout(odt_path)
+    base = os.path.expanduser(RENDER_CACHE)
+    os.makedirs(base, exist_ok=True)
+    stage = tempfile.mkdtemp(prefix="fillstage-", dir=base)
+    try:
+        staged = os.path.join(stage, os.path.basename(odt_path))
+        content = fill_content(read_content(odt_path), mapping)[0]
+        write_odt(odt_path, staged, content)
+        return render_layout(staged)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def page_report(odt_path, mapping):
+    """Render as submitted and work out the line budget, or None."""
+    layout = render_as_submitted(odt_path, mapping)
+    if layout is None:
+        return None
+    units = extract_units(read_content(odt_path))
+    bullets = [(u["id"], fill_text(plain(u["text"]), mapping))
+               for u in units if u["kind"] == "bullet"]
+    get = _page_layout_getter(odt_path)
+    right_edge = ((get("fo:margin-left") or 0.5) + _page_text_width_in(odt_path)) * 72.0
+    geo = bullet_geometry(layout["lines"], bullets, right_edge)
+
+    # Line pitch is the commonest step between consecutive lines. Paragraph
+    # gaps run larger and side-by-side header halves share a baseline, so the
+    # median lands on plain line spacing.
+    steps = []
+    lines = layout["lines"]
+    for a, b in zip(lines, lines[1:]):
+        if a["page"] == b["page"] and 0 < b["yMin"] - a["yMin"] < 2 * (a["yMax"] - a["yMin"]):
+            steps.append(round(b["yMin"] - a["yMin"], 2))
+    pitch = sorted(steps)[len(steps) // 2] if steps else 13.0
+
+    hard = page_bottom_limit(odt_path)
+    safe = hard - SAFE_RESERVE_PT
+    if layout["pages"] > 1:
+        spare = -sum(1 for l in lines if l["page"] > 1)
+    else:
+        spare = int((safe - (layout["last"] or safe)) // pitch)
+    layout.update(geo=geo, order=[u for u, _ in bullets], hard=hard, safe=safe,
+                  pitch=pitch, spare=spare, filled=bool(mapping))
+    return layout
+
+
+def unmeasurable(report, path):
+    """Why a page report cannot be trusted, or None if it can."""
+    if report is None:
+        return "PDF conversion unavailable (%s)" % render_unavailable_reason()
+    if report["substitutes"]:
+        missing = missing_fonts(path)
+        return ("rendered with %s, which the document never names - a font it "
+                "asks for is not installed here%s, so every page measurement "
+                "used the wrong metrics"
+                % (", ".join(report["substitutes"]),
+                   " (fc-match finds no %s)" % ", ".join(missing) if missing else ""))
+    return None
+
+
+def describe_measurement(report):
+    return ("as submitted - placeholders filled in memory from the map, nothing written"
+            if report["filled"] else
+            "with placeholders - no map found, so real values may run wider")
 
 
 def cmd_budget(args):
-    pages, last, pdf = measure_page_budget(args.resume)
-    if pdf:
-        shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
-    if last is None:
-        print("PDF conversion unavailable (%s); budget check skipped"
-              % render_unavailable_reason())
-        return
-    hard = page_bottom_limit(args.resume)
-    safe = hard - SAFE_RESERVE_PT
-    hard_reserve = hard - last
-    safe_reserve = safe - last
-    print("pages: %d" % pages)
+    content = read_content(args.resume)
+    report = page_report(args.resume, load_map(args.map, content))
+    why = unmeasurable(report, args.resume)
+    if why:
+        print("FAIL: budget cannot be measured: %s" % why)
+        sys.exit(1)
+    last, safe, hard = report["last"], report["safe"], report["hard"]
+    print("measured: %s" % describe_measurement(report))
+    print("pages: %d" % report["pages"])
     print("last content yMax: %.2fpt" % last)
-    print("reserve to hard limit (%.0fpt): %.2fpt" % (hard, hard_reserve))
-    print("reserve to safe buffer (%.0fpt): %.2fpt" % (safe, safe_reserve))
-    if safe_reserve > 50:
+    print("reserve to hard limit (%.0fpt): %.2fpt" % (hard, hard - last))
+    print("reserve to safe buffer (%.0fpt): %.2fpt" % (safe, safe - last))
+    print("spare lines above the safe buffer: %d (at %.1fpt per line)"
+          % (report["spare"], report["pitch"]))
+    if report["pages"] == 1 and safe - last > 50:
         print("\nNOTABLE: ~%.0fpt of unused space below the safe buffer - "
               "consider using it (add a bullet, lengthen one, or a small "
-              "font-size nudge)." % safe_reserve)
+              "font-size nudge)." % (safe - last))
+    print("\nbullets - lines, then characters free on the last line before it wraps:")
+    for uid in report["order"]:
+        if uid in report["geo"]:
+            n, free = report["geo"][uid]
+            print("  %-12s %d  +%d" % (uid, n, free))
+        else:
+            print("  %-12s ?  (not found in the render)" % uid)
 
 
 # ---------------------------------------------------------------- fill
@@ -1115,22 +1320,9 @@ def read_pii_map(path, apostrophe=None):
     return mapping
 
 
-def cmd_fill(args):
-    out_base = os.path.basename(args.output)
-    stem = os.path.splitext(out_base)[0]
-    in_private = "private" in os.path.normpath(args.output).split(os.sep)
-    if not (stem.endswith(FILLED_SUFFIXES) or in_private):
-        sys.exit(
-            "fill: refusing to write %s - a filled resume must land on a\n"
-            "gitignored path. Name it *_filled.odt or put it under private/."
-            % args.output)
-
-    content = read_content(args.resume)
-    apostrophe = canon_conventions(content)["forms"].get("apostrophe", (None,))[0]
-    mapping = read_pii_map(args.map, apostrophe=apostrophe)
+def fill_content(content, mapping):
+    """(filled content, {token: count}, tokens present before filling)."""
     body_start = content.find("<office:body>")
-
-    problems, warnings = [], []
     counts = dict.fromkeys(mapping, 0)
 
     # Which tokens need a mapping is a question about the source document, so
@@ -1150,6 +1342,25 @@ def cmd_fill(args):
 
     pattern = re.compile("|".join(re.escape(t) for t in mapping))
     content = content[:body_start] + pattern.sub(substitute, content[body_start:])
+    return content, counts, present
+
+
+def cmd_fill(args):
+    out_base = os.path.basename(args.output)
+    stem = os.path.splitext(out_base)[0]
+    in_private = "private" in os.path.normpath(args.output).split(os.sep)
+    if not (stem.endswith(FILLED_SUFFIXES) or in_private):
+        sys.exit(
+            "fill: refusing to write %s - a filled resume must land on a\n"
+            "gitignored path. Name it *_filled.odt or put it under private/."
+            % args.output)
+
+    content = read_content(args.resume)
+    apostrophe = canon_conventions(content)["forms"].get("apostrophe", (None,))[0]
+    mapping = read_pii_map(args.map, apostrophe=apostrophe)
+
+    problems, warnings = [], []
+    content, counts, present = fill_content(content, mapping)
 
     for token in sorted(t for t, n in counts.items() if n == 0):
         warnings.append("%s in %s matched nothing in the document"
@@ -1164,6 +1375,11 @@ def cmd_fill(args):
                                      for t, n in sorted(filled.items())))
     else:
         print("filled: (nothing)")
+    # Lengths only, never a value: how much wider each token became, which is
+    # what explains a fill that tips a line over.
+    if filled:
+        print("width: " + "  ".join("%s %+d" % (t, len(mapping[t]) - len(t))
+                                    for t in sorted(filled)))
 
     if not problems:
         # Staged next to the destination, not moved into place until the page
@@ -1174,34 +1390,34 @@ def cmd_fill(args):
 
         hard = page_bottom_limit(staging)
         safe = hard - SAFE_RESERVE_PT
-        pdf = None
         try:
-            pages, last, pdf = measure_page_budget(staging)
-            if last is None:
-                warnings.append("PDF conversion unavailable (%s); page check "
-                                "skipped - verify by eye that the filled resume "
-                                "still fits one page"
-                                % render_unavailable_reason())
-            else:
-                print("\npages: %d" % pages)
-                print("last content yMax: %.2fpt" % last)
-                print("reserve to hard limit (%.0fpt): %.2fpt" % (hard, hard - last))
-                print("reserve to safe buffer (%.0fpt): %.2fpt" % (safe, safe - last))
-                if pages > 1:
-                    problems.append("filled resume is %d pages; must be 1" % pages)
-                elif last > hard:
-                    problems.append("filled content overflows bottom margin "
-                                    "(%.2fpt); real values are longer than the "
-                                    "tokens they replaced" % last)
-                elif last > safe:
-                    warnings.append("less than 0.25in reserve left (%.2fpt)" % last)
+            report = render_layout(staging)
+            why = unmeasurable(report, staging)
         except Exception as e:
-            warnings.append("PDF conversion unavailable (%s); page check skipped "
-                            "- verify by eye that the filled resume still fits "
-                            "one page" % e)
-        finally:
-            if pdf:
-                shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
+            report, why = None, "PDF conversion failed (%s)" % e
+        if why:
+            if args.no_page_check:
+                warnings.append("%s; page check SKIPPED by --no-page-check - "
+                                "nothing verified that the filled resume fits "
+                                "one page" % why)
+            else:
+                problems.append("page check could not run: %s. Fix that, or "
+                                "pass --no-page-check to accept an unverified "
+                                "fill" % why)
+        else:
+            pages, last = report["pages"], report["last"]
+            print("\npages: %d" % pages)
+            print("last content yMax: %.2fpt" % last)
+            print("reserve to hard limit (%.0fpt): %.2fpt" % (hard, hard - last))
+            print("reserve to safe buffer (%.0fpt): %.2fpt" % (safe, safe - last))
+            if pages > 1:
+                problems.append("filled resume is %d pages; must be 1" % pages)
+            elif last > hard:
+                problems.append("filled content overflows bottom margin "
+                                "(%.2fpt); real values are longer than the "
+                                "tokens they replaced" % last)
+            elif last > safe:
+                warnings.append("less than 0.25in reserve left (%.2fpt)" % last)
 
         if problems:
             os.remove(staging)
@@ -1340,34 +1556,71 @@ def cmd_check(args):
             warnings.append("bullet runs %d sentences; canon's longest runs %d: %s"
                             % (n, canon_sentences, t[:60]))
 
-    # page budget + parse check
-    pages, last, pdf = None, None, None
-    reason = None
+    # Page budget + parse check, measured on the document as it would be
+    # submitted: placeholders filled in memory when the map exists. The
+    # tokenized file is never what gets sent, and short tokens hide overflow.
+    mapping = load_map(args.map, canon)
+    why, out_rep, canon_rep = None, None, None
     try:
-        pages, last, pdf = measure_page_budget(args.output)
+        out_rep = page_report(args.output, mapping)
+        why = unmeasurable(out_rep, args.output)
+        if not why:
+            canon_rep = page_report(args.canon, mapping)
+            why = unmeasurable(canon_rep, args.canon)
     except Exception as e:
-        reason = str(e)
-    if pages is None:
-        # Never let the page and parse gates vanish quietly: they are the
+        why = "PDF conversion failed (%s)" % e
+    if why:
+        # Never let the page and parse gates pass quietly: they are the
         # verified half of what check promises.
-        warnings.append("PDF conversion unavailable (%s); page and parse checks "
-                        "SKIPPED - this run did not verify one page, bottom "
-                        "margin, or text recoverability"
-                        % (reason or render_unavailable_reason()))
+        if args.no_page_check:
+            warnings.append("%s; page and parse checks SKIPPED by --no-page-check "
+                            "- this run did not verify one page, bottom margin, "
+                            "or text recoverability" % why)
+        else:
+            problems.append("page and parse checks could not run: %s. Fix that, "
+                            "or pass --no-page-check to accept an unverified "
+                            "result" % why)
     else:
+        pages, last, hard = out_rep["pages"], out_rep["last"], out_rep["hard"]
+        print("\n=== page budget (%s) ===" % describe_measurement(out_rep))
+        print("  pages %d, last content yMax %.2fpt (margin %.0fpt)"
+              % (pages, last, hard))
         if pages > 1:
             problems.append("resume is %d pages; must be 1" % pages)
-        if last is not None:
-            hard = page_bottom_limit(args.output)
-            print("\npage budget: last content yMax %.2fpt (margin %.0fpt)"
-                  % (last, hard))
-            if last > hard:
-                problems.append("content overflows bottom margin (%.2fpt)" % last)
-            elif last > hard - SAFE_RESERVE_PT:
-                warnings.append("less than 0.25in reserve left (%.2fpt)" % last)
+        elif last > hard:
+            problems.append("content overflows bottom margin (%.2fpt)" % last)
+        elif last > hard - SAFE_RESERVE_PT:
+            warnings.append("less than 0.25in reserve left (%.2fpt)" % last)
+
+        # Line budget: edits may not add lines canon has no room for. This is
+        # stricter than the margin check on purpose - it fails at the safe
+        # buffer, before a different renderer's metrics can tip the page.
+        added = len(out_rep["lines"]) - len(canon_rep["lines"])
+        print("  lines %+d vs canon; canon had %d spare above the safe buffer"
+              % (added, canon_rep["spare"]))
+        if added > 0 and added > max(canon_rep["spare"], 0):
+            problems.append("edits add %d line(s); canon has %d spare above the "
+                            "safe buffer - trim a changed bullet"
+                            % (added, max(canon_rep["spare"], 0)))
+
+        id_of_canon = {u["text"]: uid for uid, u in cu.items() if u["kind"] == "bullet"}
+        id_of_out = {u["text"]: uid for uid, u in ou.items() if u["kind"] == "bullet"}
+        changed = [(id_of_canon.get(a), id_of_out.get(b)) for a, b in reworded]
+        changed += [(None, id_of_out.get(t)) for t in came]
+        for old_id, new_id in changed:
+            if new_id not in out_rep["geo"]:
+                continue
+            n, free = out_rep["geo"][new_id]
+            before = canon_rep["geo"].get(old_id, (0, 0))[0] if old_id else 0
+            print("  %-12s %s -> %d lines, +%d chars free on the last"
+                  % (new_id, before or "new", n, free))
+            if free < NEAR_WRAP_CHARS:
+                warnings.append("%s is %d chars from wrapping to another line; "
+                                "any wider renderer or value tips it"
+                                % (new_id, free))
+
         # parse check - what a real parser's text extraction would see
-        flat = subprocess.run(["pdftotext", "-layout", pdf, "-"],
-                              capture_output=True, text=True).stdout
+        flat = out_rep["flat"]
         pos = -1
         for h in SECTION_HEADINGS:
             i = flat.find(h)
@@ -1377,13 +1630,14 @@ def cmd_check(args):
                 problems.append("parse check: heading %s out of reading order" % h)
             else:
                 pos = i
+        squashed = _squash(flat)
         for uid, u in ou.items():
             if u.get("kind") == "bullet":
-                # plain(): the PDF renders an apostrophe, not `&apos;`.
-                probe = re.sub(r"\s+", " ", plain(u["text"]))[:28]
-                if probe and probe not in re.sub(r"\s+", " ", flat):
+                # plain(): the PDF renders an apostrophe, not `&apos;`. The
+                # probe is filled the same way the render was.
+                probe = _squash(fill_text(plain(u["text"]), mapping))[:24]
+                if probe and probe not in squashed:
                     problems.append("parse check: bullet %s text not recoverable" % uid)
-        shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
 
     # Scan the whole body, not just editable units: the contact block holds
     # [Name]/[Email]/[Phone] and is deliberately not surfaced by extract.
@@ -1420,15 +1674,35 @@ def cmd_extract(args):
 def cmd_doctor(args):
     soffice = find_soffice()
     print("LibreOffice: %s" % (" ".join(soffice) if soffice else "NOT FOUND"))
-    for tool in ("pdftotext", "pdfinfo"):
+    for tool in POPPLER_TOOLS:
         print("%-12s %s" % (tool + ":", shutil.which(tool) or "NOT FOUND"))
-    if soffice and shutil.which("pdftotext") and shutil.which("pdfinfo"):
-        print("\nOK - check and budget can verify page count, bottom margin, "
-              "and parse recoverability.")
+    ok = bool(soffice) and all(shutil.which(t) for t in POPPLER_TOOLS)
+
+    # A renderer that has the tools but not the document's fonts measures the
+    # wrong document, so a resume given here gets its fonts checked too.
+    # fc-match alone over-reports - styles.xml names fonts no text uses - so
+    # the verdict comes from what a real render had to substitute.
+    if args.resume:
+        missing = missing_fonts(args.resume)
+        report = render_layout(args.resume) if ok else None
+        if report and report["substitutes"]:
+            ok = False
+            print("fonts:       SUBSTITUTED with %s; not installed: %s"
+                  % (", ".join(report["substitutes"]),
+                     ", ".join(missing) if missing else "unknown (no fc-match)"))
+        elif report:
+            print("fonts:       every font the text uses is installed")
+        elif missing:
+            print("fonts:       not installed (some may be unused): %s"
+                  % ", ".join(missing))
+
+    if ok:
+        print("\nOK - check, budget, and fill can verify page count, bottom "
+              "margin, and parse recoverability.")
         return
-    print("\nIncomplete (%s).\nmatch, extract, apply, fill, and the voice lint "
-          "still work. check and budget will skip page and parse verification "
-          "and say so." % render_unavailable_reason())
+    print("\nIncomplete.\nmatch, extract, apply, and the voice lint still work. "
+          "check, budget, and fill fail rather than pass unmeasured; "
+          "--no-page-check accepts an unverified result.")
     sys.exit(1)
 
 
@@ -1445,7 +1719,8 @@ def main():
 
     p = sub.add_parser("extract"); p.add_argument("resume"); p.set_defaults(fn=cmd_extract)
 
-    p = sub.add_parser("doctor"); p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("doctor"); p.add_argument("resume", nargs="?")
+    p.set_defaults(fn=cmd_doctor)
 
     p = sub.add_parser("match"); p.add_argument("resume"); p.add_argument("jd")
     p.add_argument("--json", action="store_true")
@@ -1456,15 +1731,19 @@ def main():
     p.add_argument("-o", "--output", required=True)
     p.add_argument("--identity", action="store_true"); p.set_defaults(fn=cmd_apply)
 
+    # --map exists so the commands can be exercised against a throwaway fixture.
+    # The real run omits it; a hook denies any command that names the real map.
     p = sub.add_parser("check"); p.add_argument("canon"); p.add_argument("output")
+    p.add_argument("--map", default="pii.txt")
+    p.add_argument("--no-page-check", action="store_true")
     p.set_defaults(fn=cmd_check)
 
-    p = sub.add_parser("budget"); p.add_argument("resume"); p.set_defaults(fn=cmd_budget)
+    p = sub.add_parser("budget"); p.add_argument("resume")
+    p.add_argument("--map", default="pii.txt"); p.set_defaults(fn=cmd_budget)
 
-    # --map exists so the command can be exercised against a throwaway fixture.
-    # The real run omits it; a hook denies any command that names the real map.
     p = sub.add_parser("fill"); p.add_argument("resume")
     p.add_argument("-o", "--output", required=True)
+    p.add_argument("--no-page-check", action="store_true")
     p.add_argument("--map", default="pii.txt"); p.set_defaults(fn=cmd_fill)
 
     args = ap.parse_args()
