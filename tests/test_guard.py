@@ -78,6 +78,15 @@ class TestDeniesFilledResumes(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNotNone(bash("cat " + name))
 
+    def test_filled_resume_is_the_plain_resume_name(self):
+        for name in ("Someone_Resume.odt", "Resume.odt"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(bash("cat " + name))
+                self.assertIsNotNone(tool("Read", file_path=name))
+
+    def test_tokenized_resume_is_readable(self):
+        self.assertIsNone(bash("cat Someone_Resume_tokenized.odt"))
+
     def test_private_directory(self):
         self.assertIsNotNone(bash("cat private/resume.odt"))
         self.assertIsNotNone(tool("Read", file_path="private/resume.odt"))

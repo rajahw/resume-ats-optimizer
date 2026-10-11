@@ -194,6 +194,39 @@ class TestFill(TempCase):
         content = m.read_content(out)
         self.assertEqual(m.body_tokens(content[content.find("<office:body>"):]), set())
 
+    def test_fills_link_targets_the_editor_saved_url_encoded(self):
+        """LibreOffice stores [Token] hrefs as %5BToken%5D, relative-prefixed."""
+        content = helpers.CONTENT.replace(
+            'xlink:href="[ProjectRepo]"', 'xlink:href="../%5BProjectRepo%5D"').replace(
+            'xlink:href="mailto:[Email]"', 'xlink:href="mailto:%5BEmail%5D"')
+        src = self.odt(content=content)
+        mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
+        out = self.path("o_filled.odt")
+        res = self.run_cli("fill", src, "--map", mp, "-o", out, "--no-page-check")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertNotIn("matched nothing", res.stdout + res.stderr)
+        filled = m.read_content(out)
+        self.assertNotIn("%5B", filled)
+        self.assertEqual(m.body_tokens(filled[filled.find("<office:body>"):]), set())
+
+    def test_pdf_output_is_exported_and_leaves_no_filled_odt(self):
+        src = self.odt()
+        mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
+        out = self.path("Ada_Resume.pdf")
+        res = self.run_cli("fill", src, "--map", mp, "-o", out, "--no-page-check")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        with open(out, "rb") as f:
+            self.assertEqual(f.read(4), b"%PDF")
+        leftovers = [n for n in os.listdir(self.path(".")) if n.endswith(".partial.odt")]
+        self.assertEqual(leftovers, [])
+
+    def test_plain_resume_name_is_an_accepted_output(self):
+        src = self.odt()
+        mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
+        res = self.run_cli("fill", src, "--map", mp, "-o", self.path("Ada_Resume.odt"),
+                           "--no-page-check")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+
     def test_refuses_a_non_gitignored_output_path(self):
         src = self.odt()
         mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)

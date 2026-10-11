@@ -38,8 +38,8 @@ without one and the skill aborts on its first run and asks you to add it. Save y
 résumé as `canon_resume.odt` in the repo root before invoking.
 
 Each application gets its own folder, `applications/<date>_<company>_<role>/`, holding
-the posting, the edit set, the tokenized `<First>_<Last>_Resume.odt`, and the
-`<First>_<Last>_Resume_filled.odt` you submit. The folders are gitignored and are the
+the posting, the edit set, the tokenized `<First>_<Last>_Resume_tokenized.odt`, and the
+`<First>_<Last>_Resume.pdf` you submit. The folders are gitignored and are the
 archive of past applications — nothing to commit between them, and nothing overwritten
 (see [docs/adr/0001](docs/adr/0001-applications-as-gitignored-folders.md)). Back them up
 yourself if you want them kept.
@@ -179,7 +179,7 @@ python3 $SCRIPT match   canon_resume.odt applications/<folder>/posting.txt
 python3 $SCRIPT extract canon_resume.odt
 python3 $SCRIPT apply   canon_resume.odt edits.json -o out.odt
 python3 $SCRIPT check   canon_resume.odt out.odt
-python3 $SCRIPT fill    out.odt -o out_filled.odt
+python3 $SCRIPT fill    out_tokenized.odt -o out_Resume.pdf
 ```
 
 ## Placeholders
@@ -233,17 +233,17 @@ text and is left alone.
 Then:
 
 ```bash
-python3 $SCRIPT fill Ada_Lovelace_Resume.odt -o Ada_Lovelace_Resume_filled.odt
+python3 $SCRIPT fill Ada_Lovelace_Resume_tokenized.odt -o Ada_Lovelace_Resume.pdf
 ```
 
-The filled copy is what you submit. The tokenized `<PREFIX>_Resume.odt` stays untouched
-and is the one that can be committed. `fill` refuses to write anywhere but a `*_filled.*`
-path or `private/`, re-renders the result to confirm the real values did not push it onto
+The filled copy is what you submit. The tokenized `<PREFIX>_Resume_tokenized.odt` stays untouched
+and is the one that can be committed. `fill` refuses to write anywhere but a `*_Resume.pdf`/`.odt`
+(or legacy `*_filled.*`) path or `private/`, re-renders the result to confirm the real values did not push it onto
 a second page (a real name is longer than `[Name]`), and reports any token left unmapped.
 It prints token names and counts only — never a value — so its output is safe to paste
 anywhere.
 
-`pii.txt` and `*_filled.*` are both gitignored, and the pre-commit hook blocks either one
+`pii.txt` and `*_Resume.*` are both gitignored, and the pre-commit hook blocks either one
 from being staged. Git history is permanent; a PII leak cannot be undone by a later
 delete.
 
@@ -255,7 +255,7 @@ delete.
 
 - any read, write, glob, or shell command that names a `pii*` file — including wildcards
   that would sweep one up (`cat *.txt`) and indirection (`python3 -c "open('pii.txt')"`);
-- reading back a `*_filled.*` or `private/**` file, so Claude can produce a filled résumé
+- reading back a `*_Resume.*`, `*_filled.*`, or `private/**` file, so Claude can produce a filled résumé
   but never inspect one.
 
 Running `fill` stays allowed because the command does not name the map — the script opens

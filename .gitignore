@@ -41,6 +41,9 @@ canon_resume_preview.pdf
 
 # Don't commit generated resume and report
 *_Resume.odt
+*_Resume.pdf
+Resume.odt
+Resume.pdf
 *_ATS_Report.md
 
 # Per-job edit set fed to `apply`. Quotes canon's bullets verbatim, same reason

@@ -14,7 +14,7 @@ Commands:
   apply      apply an edit set (replace / delete / insert_after / reorder_projects)
   check      verify an output against canon: diff, voice lint, page budget, parse
   budget     measure a resume as submitted: pages, spare lines, per-bullet wrap slack
-  fill       replace [Token] placeholders from a local pii.txt into a *_filled copy
+  fill       replace [Token] placeholders from a local pii.txt into a filled copy (*_Resume.pdf or .odt)
   doctor     report whether this machine can measure pages (and a resume's fonts)
   split      split a pasted inbox of postings into one application folder each
   name       rename an application folder to <batch>_<company>_<role>; flag repeats
@@ -1269,10 +1269,33 @@ TOKEN_RE = re.compile(r"\[[A-Za-z0-9][A-Za-z0-9_-]*\]")
 
 # Output shapes .gitignore covers. Filling into anything else would put real
 # identity values on a committable path.
-FILLED_SUFFIXES = ("_filled", "-filled")
+FILLED_SUFFIXES = ("_filled", "-filled", "_Resume")
+
+
+def is_filled_name(stem):
+    """The output names .gitignore covers: <PREFIX>_Resume, a bare Resume, or
+    the older _filled/-filled shapes."""
+    return stem == "Resume" or stem.endswith(FILLED_SUFFIXES)
 
 
 HREF_RE = re.compile(r'xlink:href="([^"]*)"')
+
+
+ENCODED_TOKEN_RE = re.compile(r"(?:\.{1,2}/)*%5B([A-Za-z0-9][A-Za-z0-9_-]*)%5D", re.I)
+
+
+def normalize_hrefs(content):
+    """Rewrite hyperlink targets so a [Token] in one reads as a [Token].
+
+    LibreOffice saves a link target as a URL: brackets become %5B/%5D and a
+    target with no scheme gains a relative prefix (../%5BRepo%5D). Neither form
+    matches the token grammar, so fill would leave the link dead. Only the
+    in-memory copy is normalized; the tokenized .odt is never touched.
+    """
+    def fix(match):
+        return 'xlink:href="%s"' % ENCODED_TOKEN_RE.sub(
+            lambda m: "[%s]" % m.group(1), match.group(1))
+    return HREF_RE.sub(fix, content)
 
 
 def body_tokens(body):
@@ -1282,7 +1305,7 @@ def body_tokens(body):
     (mailto:[Email]) would otherwise look unmapped-safe and be left unfilled.
     """
     found = set(TOKEN_RE.findall(strip_tags(body)))
-    for href in HREF_RE.findall(body):
+    for href in HREF_RE.findall(normalize_hrefs(body)):
         found.update(TOKEN_RE.findall(unesc(href)))
     return found
 
@@ -1334,6 +1357,7 @@ def read_pii_map(path, apostrophe=None):
 
 def fill_content(content, mapping):
     """(filled content, {token: count}, tokens present before filling)."""
+    content = normalize_hrefs(content)
     body_start = content.find("<office:body>")
     counts = dict.fromkeys(mapping, 0)
 
@@ -1361,10 +1385,10 @@ def cmd_fill(args):
     out_base = os.path.basename(args.output)
     stem = os.path.splitext(out_base)[0]
     in_private = "private" in os.path.normpath(args.output).split(os.sep)
-    if not (stem.endswith(FILLED_SUFFIXES) or in_private):
+    if not (is_filled_name(stem) or in_private):
         sys.exit(
             "fill: refusing to write %s - a filled resume must land on a\n"
-            "gitignored path. Name it *_filled.odt or put it under private/."
+            "gitignored path. Name it <Name>_Resume.odt or put it under private/."
             % args.output)
 
     content = read_content(args.resume)
@@ -1397,7 +1421,11 @@ def cmd_fill(args):
         # Staged next to the destination, not moved into place until the page
         # check passes. A rejected fill that still left the file behind invites
         # someone reading only the exit code to submit the bad one.
-        staging = args.output + ".partial"
+        # A .pdf destination is exported from the filled document, which only
+        # ever exists as this staging file and is removed before returning.
+        as_pdf = args.output.lower().endswith(".pdf")
+        staging = (os.path.splitext(args.output)[0] + ".partial.odt" if as_pdf
+                   else args.output + ".partial")
         write_odt(args.resume, staging, content)
 
         hard = page_bottom_limit(staging)
@@ -1431,12 +1459,27 @@ def cmd_fill(args):
             elif last > safe:
                 warnings.append("less than 0.25in reserve left (%.2fpt)" % last)
 
-        if problems:
-            os.remove(staging)
-            problems.append("no file was written")
+        if as_pdf and not problems:
+            pdf = to_pdf(staging)
+            if not pdf:
+                problems.append("PDF export failed: LibreOffice is required "
+                                "to write a PDF")
+            else:
+                try:
+                    shutil.move(pdf, args.output)
+                finally:
+                    shutil.rmtree(os.path.dirname(pdf), ignore_errors=True)
+                os.remove(staging)
+                print("wrote %s" % args.output)
+        elif problems:
+            pass
         else:
             os.replace(staging, args.output)
             print("wrote %s" % args.output)
+        if problems:
+            if os.path.exists(staging):
+                os.remove(staging)
+            problems.append("no file was written")
 
     for w in warnings:
         print("WARN: %s" % w)

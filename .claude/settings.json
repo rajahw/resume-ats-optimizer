@@ -2,6 +2,8 @@
   "permissions": {
     "deny": [
       "Read(**/pii*)",
+      "Read(**/*_Resume.*)",
+      "Read(**/Resume.*)",
       "Read(**/*_filled.*)",
       "Read(**/*-filled.*)",
       "Read(**/private/**)"

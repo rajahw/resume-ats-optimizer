@@ -26,7 +26,7 @@ user applies to is private.
   `split` empties it.
 - `applications/<batch>_<company>_<role>/` - one folder per application:
   `posting.txt`, `state.json` (its stage), `consultation.md` (proposal and answers),
-  `edits.json`, `<PREFIX>_Resume.odt` (tokenized), `<PREFIX>_Resume_filled.odt` (the
+  `edits.json`, `<PREFIX>_Resume_tokenized.odt`, `<PREFIX>_Resume.pdf` (the
   one to submit).
 - `applications/<batch>_batch-summary.md` - the batch summary, one per batch.
 - `experience.md` - the **Experience ledger** (below).
@@ -54,15 +54,16 @@ one line per term, keyed by the posting's exact phrasing:
 
 ## Output naming
 
-Résumé files are `<PREFIX>_Resume.odt` and `<PREFIX>_Resume_filled.odt` inside each
+Résumé files are `<PREFIX>_Resume_tokenized.odt` and `<PREFIX>_Resume.pdf` inside each
 application folder, where `PREFIX` is the
 user's first and last name joined by an underscore (`Ada_Lovelace`). **No name is
 hardcoded anywhere in this skill** - it comes from `.output_name` in the working
 directory, or from asking (Phase 0, step 5). To build `PREFIX` from an answer: join first and
 last with `_`, then drop anything that is not a letter, digit, hyphen, or underscore
 (`Ada O'Neil-Smith` → `Ada_ONeil-Smith`). If the user declines to give a name, drop the
-`<PREFIX>_` prefix entirely, so they are plain `Resume.odt` and `Resume_filled.odt`
-rather than `_Resume.odt`.
+`<PREFIX>_` prefix entirely, so they are plain `Resume_tokenized.odt` and `Resume.pdf`
+rather than `_Resume_tokenized.odt`. `<PREFIX>_Resume.pdf` is the filled copy holding
+real values, so it is the one never read back.
 
 `.output_name` is gitignored - it holds a real name, and git history is permanent.
 
@@ -84,9 +85,9 @@ rather than `_Resume.odt`.
    what literally appears in canon, not against any fixed list. Never reword,
    expand, guess at, or fill them; never treat one as a keyword gap, and never conclude
    from a token that a fact is missing. They pass through every edit untouched, and
-   canon and `<PREFIX>_Resume.odt` keep them forever. The `fill` command (Phase 3) is
+   canon and `<PREFIX>_Resume_tokenized.odt` keep them forever. The `fill` command (Phase 3) is
    the only thing that ever replaces one, it does so mechanically from a file you
-   cannot read, and it writes to a separate `_filled` copy.
+   cannot read, and it writes to a separate filled PDF (`<PREFIX>_Resume.pdf`).
 4. **Only bullets, Skills values, and header `.mid` (tech stack) fields are editable.**
    Contact block, section headings, employers, project names, job titles, dates, degree,
    and GPA are never touched - `apply` refuses a header `.left` or `.right` edit unless
@@ -108,7 +109,7 @@ rather than `_Resume.odt`.
    resume at all (below).
 9. **Never read the identity map, and never write PII yourself.** `pii.txt` holds the
    real name, email, phone, and employers. Do not open, cat, grep, glob, quote, echo,
-   summarize, or reconstruct it, and do not read back any `_filled` output either. A
+   summarize, or reconstruct it, and do not read back any filled `<PREFIX>_Resume.pdf` either. A
    PreToolUse hook enforces this and denies the call: if you are denied, that is the
    system working as designed - relay it and stop, never hunt for another route. Never
    type a real name, email, phone number, or employer into any file, including the
@@ -209,7 +210,7 @@ skill: Phase 0 finds the open applications and each one picks up at its stage.
 | `new` | split from the inbox, not yet read |
 | `analyzed` | named, matched, proposal in `consultation.md` |
 | `consulted` | answers recorded in `consultation.md` |
-| `applied` | `check` passed on `<PREFIX>_Resume.odt` |
+| `applied` | `check` passed on `<PREFIX>_Resume_tokenized.odt` |
 | `filled` | `fill` passed; done |
 | `skipped` | no résumé by decision (disqualified, duplicate declined); done |
 | `needs-you` | Phase 3 hit something it could not fix unattended |
@@ -387,7 +388,7 @@ A gap that consultation *filled* is not a disqualifier - that is the system work
 For each application at stage `consulted`, **without pausing**. Work from
 `consultation.md`, not from memory.
 
-**No changes needed:** copy `canon_resume.odt` to `<folder>/<PREFIX>_Resume.odt` and go
+**No changes needed:** copy `canon_resume.odt` to `<folder>/<PREFIX>_Resume_tokenized.odt` and go
 straight to fill.
 
 **Otherwise, build the edit set** within budget: at most 3 bullet rewordings (each at
@@ -406,7 +407,7 @@ they do. When a wanted phrase would cost a line, trim elsewhere in the same bull
 rather than letting it wrap.
 
 1. Write `<folder>/edits.json`, then
-   `python3 $SCRIPT apply canon_resume.odt <folder>/edits.json -o <folder>/<PREFIX>_Resume.odt`.
+   `python3 $SCRIPT apply canon_resume.odt <folder>/edits.json -o <folder>/<PREFIX>_Resume_tokenized.odt`.
    Canon is never modified. Edit-set shape:
    ```json
    {"replace": {"exp1.b2": "...", "proj1.head.mid": "| TypeScript, React, Node.js"},
@@ -414,7 +415,7 @@ rather than letting it wrap.
     "insert_after": {"exp1.b1": ["new bullet"]},
     "reorder_projects": ["Cattle Disease Detection", "Cryptography Demo", "Tetris Clone"]}
    ```
-2. `python3 $SCRIPT check canon_resume.odt <folder>/<PREFIX>_Resume.odt`. Fails on voice
+2. `python3 $SCRIPT check canon_resume.odt <folder>/<PREFIX>_Resume_tokenized.odt`. Fails on voice
    violations, >1 page, bottom-margin overflow, edits that add more lines than canon has
    spare, or a parse regression - all measured on the document as submitted. It also
    prints each changed bullet's line count before and after, and warns when one ends
@@ -425,7 +426,7 @@ rather than letting it wrap.
 3. **Fill.** Run it directly - do not first test whether the map exists, because every
    route to that filename is denied to you and the command reports the answer itself:
 
-   `python3 $SCRIPT fill <folder>/<PREFIX>_Resume.odt -o <folder>/<PREFIX>_Resume_filled.odt`
+   `python3 $SCRIPT fill <folder>/<PREFIX>_Resume_tokenized.odt -o <folder>/<PREFIX>_Resume.pdf`
 
    It reads `pii.txt`, substitutes every `[Token]`, and prints only token names, counts,
    how many characters wider each token became, and page geometry. Pass

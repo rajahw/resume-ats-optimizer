@@ -8,7 +8,7 @@ Two rules, both enforced against every tool call:
      names it on the command line, so nothing legitimate needs an allowance.
 
   B. Filled resumes are write-only. Claude runs `fill` to produce
-     <PREFIX>_Resume_filled.odt but must never read the result back, or the
+     <PREFIX>_Resume.odt (the tokenized copy is <PREFIX>_Resume_tokenized.odt) but must never read the result back, or the
      isolation in rule A is pointless.
 
 Rule A tests path-like fields and Bash command strings, deliberately NOT file
@@ -63,7 +63,7 @@ PII_FILE_REF = re.compile(r"""(?:^|[\s/'"=(,;<>&|`$])pii[\w-]*\.\w+""", re.I)
 PATH_FIELDS = ("file_path", "path", "notebook_path", "pattern", "glob")
 
 # Shapes that are gitignored because they hold filled-in identity values.
-PROTECTED_GLOBS = ("*_filled.*", "*-filled.*", "*_final.*", "*-final.*",
+PROTECTED_GLOBS = ("*_Resume.*", "Resume.*", "*_filled.*", "*-filled.*", "*_final.*", "*-final.*",
                    "*_submitted.*", "*-submitted.*",
                    "private", "private/*", "*/private/*")
 

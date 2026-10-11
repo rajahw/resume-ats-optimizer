@@ -6,4 +6,4 @@ Tailoring used to write one fixed set of outputs to the repo root, overwritten e
 
 - There is no versioned history of past applications; the folders on disk are the record, so backing them up is the user's job.
 - A folder for the same company and role already existing is surfaced during consultation as a possible duplicate application, never overwritten.
-- `_filled` naming is kept inside each folder so the PII hook still blocks reading filled résumés back.
+- The filled résumé is `<PREFIX>_Resume.pdf` and the tokenized one `<PREFIX>_Resume_tokenized.odt`, so the PII hook still blocks reading filled résumés back.

@@ -134,7 +134,7 @@ def main():
         sys.stderr.write(
             "\nThe real name/email/phone/employers are probably in there. Git history\n"
             "is permanent - committing this cannot be undone by deleting it later.\n\n"
-            "  - To keep a filled copy locally, rename it to *_filled.odt (gitignored)\n"
+            "  - To keep a filled copy locally, name it <Name>_Resume.odt (gitignored)\n"
             "  - To unstage:  git restore --staged <file>\n"
             "  - If this is genuinely intended:  git commit --no-verify\n\n")
         return 1
