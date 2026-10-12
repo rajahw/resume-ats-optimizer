@@ -7,6 +7,15 @@
       "Read(**/*_filled.*)",
       "Read(**/*-filled.*)",
       "Read(**/private/**)"
+    ],
+    "allow": [
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py shape *)",
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py doctor *)",
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py status *)",
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py extract *)",
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py budget *)",
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py match *)",
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py check *)"
     ]
   },
   "hooks": {
