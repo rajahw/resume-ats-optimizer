@@ -2,7 +2,7 @@
   "permissions": {
     "deny": [
       "Read(**/pii*)",
-      "Read(**/*_Resume.*)",
+      "Read(**/*_Resume.pdf)",
       "Read(**/Resume.*)",
       "Read(**/*_filled.*)",
       "Read(**/*-filled.*)",
