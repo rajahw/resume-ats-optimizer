@@ -16,7 +16,8 @@ Commands:
   budget     measure a resume as submitted: pages, spare lines, per-bullet wrap slack
   fill       replace [Token] placeholders from a local pii.txt into a filled copy (*_Resume.pdf or .odt)
   doctor     report whether this machine can measure pages (and a resume's fonts)
-  split      split a pasted inbox of postings into one application folder each
+  split      split a pasted inbox of postings into one application folder each;
+             an entry that is only a URL is fetched and its posting extracted
   name       rename an application folder to <batch>_<company>_<role>; flag repeats
   stage      record how far an application has got
   status     list applications still in progress, or one batch's
@@ -28,6 +29,7 @@ be run by an agent that must not see what it substitutes.
 
 import argparse
 import functools
+import html
 import json
 import os
 import re
@@ -37,7 +39,11 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
+from html.parser import HTMLParser
 
 # ---------------------------------------------------------------- constants
 
@@ -1754,6 +1760,301 @@ def application_folders(root):
                   if os.path.isfile(os.path.join(root, d, STATE_FILE)))
 
 
+# ---------------------------------------------------------------- fetching
+#
+# An inbox entry that is only a URL is fetched here, outside the model, so the
+# posting's text goes straight to disk and never through an agent's context.
+# Only what a logged-out visitor sees is read: no cookies, no login. A page that
+# yields no recognizable posting fails rather than saving whatever text it had,
+# because navigation and login-wall junk would quietly mislead `match`.
+
+URL_CHUNK_RE = re.compile(r"\A\s*https?://\S+\s*\Z")
+FETCH_TIMEOUT_S = 15
+FETCH_PAUSE_S = 1.0              # between fetches, so a batch is not a burst
+USER_AGENT = "resume-ats-optimizer (personal use)"
+MIN_POSTING_WORDS = 80
+LOGIN_PATH_RE = re.compile(r"/(authwall|login|signin|uas/login|checkpoint)\b", re.I)
+
+# Job-board markup for pages that carry no JSON-LD: LinkedIn's logged-out job
+# page, then Greenhouse's job-boards page. First match wins.
+MARKUP_DESCRIPTION = ("show-more-less-html__markup", "description__text",
+                      "job__description")
+MARKUP_TITLE = ("top-card-layout__title", "topcard__title", "job__title")
+MARKUP_COMPANY = ("topcard__org-name-link", "topcard__flavor")
+
+BLOCK_TAGS = {"p", "div", "br", "ul", "ol", "li", "tr", "section", "article",
+              "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre"}
+VOID_TAGS = {"br", "img", "hr", "meta", "input", "link", "source", "wbr", "col"}
+
+
+class FetchError(Exception):
+    """A URL that did not yield a posting. The message is the short reason."""
+
+
+class _HtmlScan(HTMLParser):
+    """Collects every JSON-LD block, and the text of the first element whose
+    class names each of `targets`. List items become '- ' lines."""
+
+    def __init__(self, targets=()):
+        super().__init__(convert_charrefs=True)
+        self.targets = targets
+        self.found = {}
+        self.ld_json = []
+        self._open = []          # [target, depth] for each capture in progress
+        self._raw = None         # parts of the JSON-LD script being read
+        self._in_raw = False
+
+    def _emit(self, s):
+        for target, _ in self._open:
+            self.found[target].append(s)
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag in ("script", "style"):
+            ld = tag == "script" and (a.get("type") or "").lower() == "application/ld+json"
+            self._raw = [] if ld else None
+            self._in_raw = True
+            return
+        if tag not in VOID_TAGS:
+            for cap in self._open:
+                cap[1] += 1
+        if tag == "li":
+            self._emit("\n- ")
+        elif tag in BLOCK_TAGS:
+            self._emit("\n")
+        classes = (a.get("class") or "").split()
+        for target in self.targets:
+            if target not in self.found and target in classes and tag not in VOID_TAGS:
+                self.found[target] = []
+                self._open.append([target, 1])
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style"):
+            if self._raw is not None:
+                self.ld_json.append("".join(self._raw))
+            self._raw = None
+            self._in_raw = False
+            return
+        if tag in VOID_TAGS:
+            return
+        if tag in BLOCK_TAGS:
+            self._emit("\n")
+        for cap in list(self._open):
+            cap[1] -= 1
+            if cap[1] == 0:
+                self._open.remove(cap)
+
+    def handle_data(self, data):
+        if self._in_raw:
+            if self._raw is not None:
+                self._raw.append(data)
+            return
+        self._emit(data)
+
+    def text(self, target):
+        return tidy_text("".join(self.found.get(target, ()))) or None
+
+
+def tidy_text(text):
+    """Collapse runs of spaces, fold a bare '-' onto the line after it, and drop
+    blank lines: block tags nest, so the breaks they leave carry no meaning."""
+    out = []
+    pending_bullet = False
+    for line in text.split("\n"):
+        line = re.sub(r"[ \t ]+", " ", line).strip()
+        if line == "-":
+            pending_bullet = True
+            continue
+        if not line:
+            continue
+        if pending_bullet and not line.startswith("- "):
+            line = "- " + line
+        pending_bullet = False
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def html_to_text(fragment):
+    scan = _HtmlScan(("_root",))
+    scan.feed('<div class="_root">%s</div>' % fragment)
+    scan.close()
+    return scan.text("_root") or ""
+
+
+def _job_posting_ld(blocks):
+    """The first schema.org JobPosting among a page's JSON-LD blocks."""
+    def walk(node):
+        if isinstance(node, list):
+            for item in node:
+                found = walk(item)
+                if found:
+                    return found
+        elif isinstance(node, dict):
+            kind = node.get("@type")
+            if kind == "JobPosting" or (isinstance(kind, list) and "JobPosting" in kind):
+                return node
+            return walk(node.get("@graph"))
+        return None
+
+    for block in blocks:
+        try:
+            found = walk(json.loads(block))
+        except ValueError:
+            continue
+        if found:
+            return found
+    return None
+
+
+def _first(scan, classes):
+    """First line of the first class found: a title block may also hold a location."""
+    for c in classes:
+        text = scan.text(c)
+        if text:
+            return text.split("\n")[0]
+    return None
+
+
+def normalize_url(url):
+    """LinkedIn job links come in many shapes (search pages, slugs, tracking
+    parameters); all of them name one job id, whose logged-out page is
+    /jobs/view/<id>/. Every other URL is returned unchanged."""
+    parts = urllib.parse.urlsplit(url)
+    host = parts.netloc.lower()
+    if host == "linkedin.com" or host.endswith(".linkedin.com"):
+        job = (urllib.parse.parse_qs(parts.query).get("currentJobId") or [""])[0]
+        if not job.isdigit():
+            m = re.search(r"/jobs/view/(?:[^/]*-)?(\d+)(?:/|$)", parts.path)
+            job = m.group(1) if m else ""
+        if job.isdigit():
+            return "https://www.linkedin.com/jobs/view/%s/" % job
+    return url
+
+
+def fetch_html(url):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
+                                               "Accept": "text/html"})
+    try:
+        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as resp:
+            final = resp.geturl()
+            ctype = resp.headers.get("Content-Type", "")
+            charset = resp.headers.get_content_charset() or "utf-8"
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        raise FetchError("HTTP %d" % e.code)
+    except (urllib.error.URLError, OSError) as e:
+        raise FetchError("unreachable (%s)" % getattr(e, "reason", e))
+    if LOGIN_PATH_RE.search(urllib.parse.urlsplit(final).path):
+        raise FetchError("login wall")
+    if ctype and "html" not in ctype.lower():
+        raise FetchError("not a web page (%s)" % ctype)
+    try:
+        return body.decode(charset, errors="replace")
+    except LookupError:
+        return body.decode("utf-8", errors="replace")
+
+
+def extract_posting(page):
+    """A posting's text from its page: title, company, then the description."""
+    scan = _HtmlScan(MARKUP_DESCRIPTION + MARKUP_TITLE + MARKUP_COMPANY)
+    scan.feed(page)
+    scan.close()
+
+    job = _job_posting_ld(scan.ld_json)
+    if job:
+        title = job.get("title")
+        org = job.get("hiringOrganization")
+        company = org.get("name") if isinstance(org, dict) else org
+        desc = job.get("description") or ""
+        if "<" not in desc and "&lt;" in desc:
+            desc = html.unescape(desc)
+        # Some boards (Lever) escape line breaks twice, leaving a literal \n.
+        desc = desc.replace("\\n", "\n")
+        desc = html_to_text(desc)
+    else:
+        title = _first(scan, MARKUP_TITLE)
+        company = _first(scan, MARKUP_COMPANY)
+        desc = next((t for t in map(scan.text, MARKUP_DESCRIPTION) if t), "")
+
+    if not desc:
+        raise FetchError("no posting found on the page")
+    words = len(desc.split())
+    if words < MIN_POSTING_WORDS:
+        raise FetchError("too short (%d words) - likely not the full posting" % words)
+    head = "\n".join(str(x).strip() for x in (title, company)
+                     if isinstance(x, str) and x.strip())
+    return (head + "\n\n" if head else "") + desc + "\n"
+
+
+def fetch_posting(url):
+    return extract_posting(fetch_html(url))
+
+
+# ---------------------------------------------------------------- trimming
+#
+# Postings usually end in boilerplate - equal-opportunity and accommodation
+# notices, benefits, the company pitch - that costs tokens to read and holds no
+# keyword. split cuts it, but only where that is safe: at a boilerplate line in
+# the back half, with no requirements heading after it. Eligibility lines in the
+# cut tail (citizenship, clearance, export control, sponsorship) are kept, since
+# the disqualifier scan needs them. The untrimmed text is saved beside it.
+
+FULL_POSTING_FILE = "posting.full.txt"
+TRIM_MARKER = "[Kept from trimmed tail]"
+TRIM_HEADING_WORDS = 10          # a line this short can be a heading
+
+# Boilerplate that opens a tail even mid-paragraph.
+TAIL_STRONG_RE = re.compile(
+    r"equal (employment )?opportunity|\beeo\b|affirmative action|accommodation"
+    r"|e-verify|drug[- ]free|pay transparency|applicant privacy|privacy notice"
+    r"|work authori[sz]ation|sponsorship", re.I)
+# Boilerplate that opens a tail only as a heading: as words they turn up anywhere.
+TAIL_WEAK_RE = re.compile(
+    r"benefits|perks|about us|about the company|our mission|our values|why join"
+    r"|life at|what we offer", re.I)
+# A heading that means the posting proper is not over yet.
+POSTING_SECTION_RE = re.compile(
+    r"^\s*(requirement|qualification|what you|must have|you have|preferred"
+    r"|nice to have|bonus|responsibilit|the role|about the role)", re.I)
+ELIGIBILITY_RE = re.compile(
+    r"citizen|clearance|public trust|polygraph|\bitar\b|export control"
+    r"|sponsor|visa\b|authori[sz]ed to work|work authori[sz]ation"
+    r"|permanent resident|green card", re.I)
+# How an EEO sentence lists citizenship among protected classes - not a requirement.
+NON_DISCRIMINATION_RE = re.compile(
+    r"without regard|regardless of|on the basis of|discriminat", re.I)
+
+
+def _is_heading(line):
+    return 0 < len(line.split()) <= TRIM_HEADING_WORDS
+
+
+def trim_tail(text):
+    """(trimmed text, words cut). Returns the text unchanged when no safe cut exists."""
+    lines = text.splitlines()
+    total = len(text.split())
+    seen = 0
+    cut = None
+    for i, line in enumerate(lines):
+        if seen >= total / 2 and (TAIL_STRONG_RE.search(line)
+                                  or (_is_heading(line) and TAIL_WEAK_RE.search(line))):
+            if not any(_is_heading(l) and POSTING_SECTION_RE.match(l) for l in lines[i + 1:]):
+                cut = i
+                break
+        seen += len(line.split())
+    if cut is None:
+        return text, 0
+
+    tail = lines[cut:]
+    kept = [l.strip() for l in tail
+            if ELIGIBILITY_RE.search(l) and not NON_DISCRIMINATION_RE.search(l)]
+    head = "\n".join(lines[:cut]).rstrip()
+    if kept:
+        head += "\n\n%s\n%s" % (TRIM_MARKER, "\n".join(kept))
+    removed = sum(len(l.split()) for l in tail) - sum(len(l.split()) for l in kept)
+    return head + "\n", removed
+
+
 def cmd_split(args):
     if not os.path.isfile(args.inbox):
         sys.exit("split: %s not found. Paste postings into it, separated by a "
@@ -1765,22 +2066,54 @@ def cmd_split(args):
 
     os.makedirs(args.into, exist_ok=True)
     taken = set(os.listdir(args.into))
-    n = 0
-    for text in postings:
+    failed = []
+    written = n = 0
+    fetched = False
+    for chunk in postings:
+        source = None
+        text = chunk
+        if not args.no_fetch and URL_CHUNK_RE.match(chunk):
+            source = normalize_url(chunk.strip())
+            if fetched:
+                time.sleep(FETCH_PAUSE_S)
+            fetched = True
+            try:
+                text = fetch_posting(source)
+            except FetchError as e:
+                failed.append(chunk)
+                print("FETCH FAILED: %s - %s" % (chunk.strip(), e))
+                continue
         n += 1
         while "%s_posting-%02d" % (args.date, n) in taken:
             n += 1
         folder = os.path.join(args.into, "%s_posting-%02d" % (args.date, n))
         os.makedirs(folder)
+        trimmed, cut = (text, 0) if args.no_trim else trim_tail(text)
+        if cut:
+            with open(os.path.join(folder, FULL_POSTING_FILE), "w", encoding="utf-8") as fh:
+                fh.write(text)
         with open(os.path.join(folder, POSTING_FILE), "w", encoding="utf-8") as fh:
-            fh.write(text)
-        write_state(folder, {"stage": "new", "batch": args.date})
-        print(folder)
+            fh.write(trimmed)
+        state = {"stage": "new", "batch": args.date}
+        if source:
+            state["source"] = source
+        write_state(folder, state)
+        written += 1
+        print(folder + ("  (trimmed %d words of boilerplate)" % cut if cut else ""))
 
-    # Emptied only once every posting is on disk: a leftover inbox would be
-    # split a second time on the next run.
-    open(args.inbox, "w").close()
-    print("\n%d posting(s) split; %s emptied" % (len(postings), args.inbox))
+    # A chunk leaves the inbox only once it is on disk: a leftover inbox would be
+    # split a second time on the next run. What could not be fetched stays, so
+    # its text can be pasted in place of the URL.
+    with open(args.inbox, "w", encoding="utf-8") as fh:
+        fh.write("=====\n".join(failed))
+    if not failed:
+        print("\n%d posting(s) split; %s emptied" % (written, args.inbox))
+        return
+    msg = ("%d URL(s) left in %s - paste each posting's text in place of its URL, "
+           "then split again" % (len(failed), args.inbox))
+    if not written:
+        sys.exit("split: no posting written; " + msg)
+    print("\n%d posting(s) split; %s" % (written, msg))
 
 
 def cmd_name(args):
@@ -1930,6 +2263,10 @@ def main():
                                                 default="postings/inbox.txt")
     p.add_argument("--into", default="applications")
     p.add_argument("--date", default=time.strftime("%Y-%m-%d"))
+    p.add_argument("--no-fetch", action="store_true",
+                   help="keep URL-only entries as literal text")
+    p.add_argument("--no-trim", action="store_true",
+                   help="keep the boilerplate tail of every posting")
     p.set_defaults(fn=cmd_split)
 
     p = sub.add_parser("name"); p.add_argument("folder")

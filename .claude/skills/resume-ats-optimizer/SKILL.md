@@ -23,9 +23,12 @@ All gitignored - postings are the employer's copyrighted text, and which employe
 user applies to is private.
 
 - `postings/inbox.txt` - where the user pastes postings, a line of `=====` between each.
-  `split` empties it.
+  An entry may be a posting's full text or just its URL. `split` empties it, except for
+  any URL it could not read.
 - `applications/<batch>_<company>_<role>/` - one folder per application:
-  `posting.txt`, `state.json` (its stage), `consultation.md` (proposal and answers),
+  `posting.txt`, `state.json` (its stage, and `source` when fetched from a URL),
+  `posting.full.txt` (the untrimmed posting - see Phase 0 step 6; never read it),
+  `consultation.md` (proposal and answers),
   `edits.json`, `<PREFIX>_Resume_tokenized.odt`, `<PREFIX>_Resume.pdf` (the
   one to submit).
 - `applications/<batch>_batch-summary.md` - the batch summary, one per batch.
@@ -274,11 +277,28 @@ Set a stage with `python3 $SCRIPT stage <folder> <stage> [--note "..."]`.
      earlier batch; it joins this one at its recorded stage. Mention it in one line.
    - **Inbox:** if `postings/inbox.txt` has content, run `python3 $SCRIPT split`. It
      creates one `applications/<today>_posting-NN/` folder per posting, at stage `new`,
-     and empties the inbox.
+     and empties the inbox. An entry that is only a URL is fetched by `split` itself,
+     which writes the posting straight to disk and never prints it.
+   - **Trimmed tails:** `split` also cuts each posting's closing boilerplate
+     (equal-opportunity, accommodation, benefits, company pitch) to save reading it, and
+     prints `(trimmed N words of boilerplate)` beside the folder. Eligibility lines from
+     the cut tail (citizenship, clearance, export control, sponsorship, work
+     authorization) are kept under `[Kept from trimmed tail]` for the disqualifier scan.
+     The untrimmed text is in `posting.full.txt`; open it only if `posting.txt` looks
+     cut off mid-requirements, and if so, say so - that is a trimming bug.
+   - **A URL `split` could not read:** each prints as `FETCH FAILED: <url> - <reason>`
+     and stays in the inbox. Before Phase 1, stop and prompt, one line per failure:
+     "Couldn't read `<url>` (`<reason>`). Paste the posting's text into
+     `postings/inbox.txt` in place of that URL (it's still there), save, and reply."
+     On the reply, run `split` again - only what is left in the inbox is split, so the
+     pasted posting joins this batch. If the user says to skip one, delete its URL from
+     the inbox and carry on. Never fetch a failed URL yourself (WebFetch or otherwise):
+     that routes the posting through output tokens and may not keep its wording verbatim.
    - **A posting pasted in chat:** a single one is fine - write it to
      `postings/inbox.txt` and `split`. For two or more, ask the user to paste them into
      the inbox file instead, separated by `=====` lines, and stop: re-typing every
-     posting costs output tokens the file route does not.
+     posting costs output tokens the file route does not. **Links pasted in chat** are
+     short, so any number go into the inbox, one per entry, and `split` fetches them.
    - **Nothing anywhere:** ask for postings - the inbox file for several, chat for one -
      and stop. Never fall back to generic ATS advice.
 

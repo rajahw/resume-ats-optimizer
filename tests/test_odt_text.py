@@ -3,6 +3,7 @@
 Run with: python3 -m unittest discover tests
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -485,6 +486,172 @@ class TestBatch(TempCase):
         res = self.split("\n=====\n  \n")
         self.assertNotEqual(res.returncode, 0)
         self.assertEqual(m.application_folders(self.apps), [])
+
+    # ---- URL entries. fetch_html is stubbed: no test touches the network.
+
+    def split_stubbed(self, text, pages, *extra):
+        """Split with fetch_html replaced by a lookup in `pages` (url -> html,
+        or url -> an exception message raised as FetchError)."""
+        with open(self.inbox, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        patch = ("pages = %r\n"
+                 "def fake(url):\n"
+                 "    page = pages[url]\n"
+                 "    if page.startswith('ERR:'):\n"
+                 "        raise odt_text.FetchError(page[4:])\n"
+                 "    return page\n"
+                 "odt_text.fetch_html = fake\n"
+                 "odt_text.FETCH_PAUSE_S = 0" % (pages,))
+        return self.run_stubbed(patch, "split", self.inbox, "--into", self.apps,
+                                "--date", "2026-01-02", *extra)
+
+    BODY = " ".join("word%d" % i for i in range(90))
+
+    def ld_page(self, title="Backend Engineer", company="Acme"):
+        ld = json.dumps({"@context": "https://schema.org", "@type": "JobPosting",
+                         "title": title, "hiringOrganization": {"@type": "Organization",
+                                                                "name": company},
+                         "description": "<p>About</p><ul><li><p>Go &amp; SQL</p></li>"
+                                        "<li>Docker</li></ul><p>%s</p>" % self.BODY})
+        return ('<html><head><script type="application/ld+json">%s</script></head>'
+                '<body><nav>Sign in</nav></body></html>' % ld)
+
+    def linkedin_page(self):
+        return ('<html><body><h1 class="top-card-layout__title">Data  Analyst</h1>'
+                '<a class="topcard__org-name-link">Globex</a>'
+                '<div class="description__text"><div class="show-more-less-html__markup">'
+                '<strong>Role</strong><br>Do things.<ul><li>SQL</li></ul>%s</div>'
+                '<button>Show more</button></div></body></html>' % self.BODY)
+
+    def test_url_entry_is_fetched_from_json_ld(self):
+        url = "https://boards.example.com/acme/jobs/1"
+        res = self.split_stubbed(url + "\n", {url: self.ld_page()})
+        self.assertEqual(res.returncode, 0, res.stderr)
+        folder, = m.application_folders(self.apps)
+        with open(os.path.join(folder, "posting.txt"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith("Backend Engineer\nAcme\n\nAbout\n- Go & SQL\n"
+                                        "- Docker\n"), text)
+        self.assertNotIn("Sign in", text)
+        self.assertEqual(m.read_state(folder)["source"], url)
+        self.assertNotIn("word5", res.stdout)  # fetched text is never printed
+        self.assertEqual(os.path.getsize(self.inbox), 0)
+
+    def test_linkedin_guest_markup_is_extracted(self):
+        text = m.extract_posting(self.linkedin_page())
+        self.assertTrue(text.startswith("Data Analyst\nGlobex\n\nRole\nDo things.\n- SQL\n"),
+                        text)
+        self.assertNotIn("Show more", text)
+
+    def test_literal_backslash_n_in_json_ld_is_a_line_break(self):
+        page = self.ld_page().replace("<p>About</p>", "<p>About</p>\\\\n")
+        self.assertNotIn("\\n", m.extract_posting(page))
+
+    def test_greenhouse_markup_is_extracted(self):
+        page = ('<html><body><div class="job__title"><h1>Account Executive</h1>'
+                '<div>Remote, France</div></div><button>Apply</button>'
+                '<div class="job__description body"><p>%s</p></div></body></html>'
+                % self.BODY)
+        text = m.extract_posting(page)
+        self.assertTrue(text.startswith("Account Executive\n\nword0 "), text)
+        self.assertNotIn("Apply", text)
+
+    def test_linkedin_urls_normalize_to_the_job_view_page(self):
+        want = "https://www.linkedin.com/jobs/view/4012345678/"
+        for url in ("https://www.linkedin.com/jobs/view/4012345678/?trk=abc",
+                    "https://www.linkedin.com/jobs/view/backend-dev-at-acme-4012345678",
+                    "https://linkedin.com/jobs/search/?currentJobId=4012345678&geoId=1",
+                    "https://m.linkedin.com/jobs/view/4012345678"):
+            self.assertEqual(m.normalize_url(url), want, url)
+        other = "https://jobs.lever.co/acme/1234?lever-source=x"
+        self.assertEqual(m.normalize_url(other), other)
+
+    def test_page_without_a_posting_fails_instead_of_saving_junk(self):
+        with self.assertRaises(m.FetchError):
+            m.extract_posting("<html><body><nav>Join now</nav><p>Sign in</p></body></html>")
+        short = self.ld_page().replace(self.BODY, "brief")
+        with self.assertRaises(m.FetchError):
+            m.extract_posting(short)
+
+    def test_mixed_inbox_keeps_only_the_failed_url(self):
+        good, bad = "https://a.example/job", "https://www.linkedin.com/jobs/view/42/"
+        res = self.split_stubbed("Pasted posting\n=====\n%s\n=====\n%s\n" % (good, bad),
+                                 {good: self.ld_page(), bad: "ERR:HTTP 999"})
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("FETCH FAILED: %s - HTTP 999" % bad, res.stdout)
+        self.assertEqual(len(m.application_folders(self.apps)), 2)
+        with open(self.inbox, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), bad + "\n")
+
+    def test_all_urls_failing_writes_nothing_and_exits_non_zero(self):
+        a, b = "https://a.example/1", "https://b.example/2"
+        res = self.split_stubbed("%s\n=====\n%s\n" % (a, b),
+                                 {a: "ERR:login wall", b: "ERR:no posting found on the page"})
+        self.assertNotEqual(res.returncode, 0)
+        self.assertEqual(m.application_folders(self.apps), [])
+        with open(self.inbox, encoding="utf-8") as fh:
+            self.assertEqual(m.split_postings(fh.read()), [a + "\n", b + "\n"])
+
+    def test_no_fetch_keeps_a_url_as_text(self):
+        url = "https://a.example/1"
+        res = self.split_stubbed(url + "\n", {}, "--no-fetch")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        folder, = m.application_folders(self.apps)
+        self.assertNotIn("source", m.read_state(folder))
+
+    def test_text_mentioning_a_url_is_not_a_url_entry(self):
+        self.assertIsNone(m.URL_CHUNK_RE.match("Apply at https://a.example/1\n"))
+        self.assertIsNone(m.URL_CHUNK_RE.match("https://a.example/1\nGreat role\n"))
+        self.assertTrue(m.URL_CHUNK_RE.match("  https://a.example/1  \n"))
+
+    # ---- trimming the boilerplate tail
+
+    POSTING = ("Backend Engineer\nAcme\n\nRequirements\n- %s\n"
+               % "\n- ".join("Python skill %d with services" % i for i in range(12)))
+
+    def test_boilerplate_tail_is_cut_and_eligibility_kept(self):
+        text = (self.POSTING + "Benefits\nHealth, dental, and a 401k match for you.\n"
+                "Acme is an equal opportunity employer, without regard to citizenship.\n"
+                "Must be a U.S. citizen to obtain a security clearance.\n"
+                "We cannot offer visa sponsorship for this role.\n")
+        trimmed, cut = m.trim_tail(text)
+        self.assertEqual(trimmed, self.POSTING.rstrip() + "\n\n" + m.TRIM_MARKER + "\n"
+                         "Must be a U.S. citizen to obtain a security clearance.\n"
+                         "We cannot offer visa sponsorship for this role.\n")
+        self.assertEqual(cut, 1 + 8 + 10)
+
+    def test_boilerplate_in_the_front_half_is_not_a_cut(self):
+        text = ("About us\nAcme builds tools.\n" + self.POSTING)
+        self.assertEqual(m.trim_tail(text), (text, 0))
+
+    def test_a_requirements_heading_after_boilerplate_blocks_the_cut(self):
+        text = (self.POSTING + "Benefits\nGood ones.\nPreferred qualifications\n- Go\n")
+        self.assertEqual(m.trim_tail(text), (text, 0))
+
+    def test_weak_phrase_mid_sentence_is_not_a_cut(self):
+        text = (self.POSTING + "- Build a platform that benefits our customers and "
+                "partners across every region we serve today\n")
+        self.assertEqual(m.trim_tail(text), (text, 0))
+
+    def test_split_trims_and_saves_the_full_text(self):
+        text = self.POSTING + "Equal Opportunity Employer\nWe welcome everyone.\n"
+        res = self.split(text)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("(trimmed 6 words of boilerplate)", res.stdout)
+        folder, = m.application_folders(self.apps)
+        with open(os.path.join(folder, "posting.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), self.POSTING.rstrip() + "\n")
+        with open(os.path.join(folder, "posting.full.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), text.strip() + "\n")
+
+    def test_no_trim_keeps_the_tail(self):
+        text = self.POSTING + "Equal Opportunity Employer\n"
+        with open(self.inbox, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        self.run_cli("split", self.inbox, "--into", self.apps, "--date", "2026-01-02",
+                     "--no-trim")
+        folder, = m.application_folders(self.apps)
+        self.assertFalse(os.path.exists(os.path.join(folder, "posting.full.txt")))
 
     def test_name_slugs_and_flags_an_earlier_application(self):
         self.split("Old\n", date="2025-06-01")

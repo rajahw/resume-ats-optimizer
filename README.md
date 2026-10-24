@@ -145,6 +145,18 @@ The skill works in **batches**. Paste every posting you are applying to into
 posting can be pasted straight into chat instead; several go through the file, because
 having Claude re-type each one costs tokens the file route does not.
 
+An entry can also be just the posting's URL. `split` fetches it and saves the posting
+itself, so no tokens are spent on it. Greenhouse and Lever boards work, as do careers
+pages that publish standard job-posting markup. LinkedIn works only when its public
+logged-out job page loads, and nothing is ever fetched while signed in. A URL that can't
+be read stays in the inbox, and you're asked to paste that posting's text in its place.
+
+`split` also trims each posting's closing boilerplate (equal-opportunity and accommodation
+notices, benefits, company pitch) so Claude doesn't spend tokens reading it. Lines in that
+tail about citizenship, clearance, export control, sponsorship, or work authorization are
+kept, because they can rule an application out. The untrimmed posting is saved beside it
+as `posting.full.txt`; `split --no-trim` skips trimming.
+
 1. **Analyze.** Each posting gets its own folder and a proposed edit set. No questions yet.
 2. **Consult.** One numbered list for the whole batch: experience questions asked once
    across all postings, then a block per posting. Answer tersely (`E1 y, 2.R1 n`).
@@ -172,7 +184,7 @@ SCRIPT=.claude/skills/resume-ats-optimizer/scripts/odt_text.py
 
 python3 $SCRIPT doctor
 python3 $SCRIPT shape   canon_resume.odt
-python3 $SCRIPT split                          # postings/inbox.txt -> applications/
+python3 $SCRIPT split                          # postings/inbox.txt -> applications/ (URLs fetched)
 python3 $SCRIPT name    applications/<folder> "Acme" "Backend Engineer"
 python3 $SCRIPT status                         # applications still in progress
 python3 $SCRIPT match   canon_resume.odt applications/<folder>/posting.txt
