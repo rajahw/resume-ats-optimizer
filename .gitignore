@@ -25,7 +25,9 @@ pii*.txt
 # by a later delete. Fill tokens in a copy that matches one of these names.
 *_filled.*
 *_final.*
+*-final.*
 *_submitted.*
+*-submitted.*
 *-filled.*
 private/
 

@@ -16,8 +16,9 @@ Commands:
   budget     measure a resume as submitted: pages, spare lines, per-bullet wrap slack
   fill       replace [Token] placeholders from a local pii.txt into a filled copy (*_Resume.pdf or .odt)
   doctor     report whether this machine can measure pages (and a resume's fonts)
-  split      split a pasted inbox of postings into one application folder each;
-             an entry that is only a URL is fetched and its posting extracted
+  split      split a pasted inbox of postings into one application folder each,
+             under applications/<batch>/; an entry that is only a URL is fetched
+             and its posting extracted
   name       rename an application folder to <batch>_<company>_<role>; flag repeats
   stage      record how far an application has got
   status     list applications still in progress, or one batch's
@@ -28,10 +29,12 @@ be run by an agent that must not see what it substitutes.
 """
 
 import argparse
+import difflib
 import functools
 import html
 import json
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -74,12 +77,17 @@ BANNED_PHRASES = (
 
 SECTION_HEADINGS = ("EDUCATION", "SKILLS", "EXPERIENCE", "PROJECTS")
 
-# Job-description boilerplate that should never become a keyword.
-JD_STOP_SECTIONS = re.compile(
-    r"(equal opportunity|eeo\b|affirmative action|benefits|about us|about the company"
-    r"|why join|our mission|accommodation|e-verify|drug[- ]free)",
-    re.I,
-)
+# Job-description boilerplate that should never become a keyword. The strong
+# phrases end the posting proper wherever they appear; the weak ones only as a
+# heading, since "understand the benefits of testing" is a requirement line and
+# matching it anywhere silently dropped every term after it.
+JD_STOP_STRONG = re.compile(
+    r"equal (employment )?opportunity|\beeo\b|affirmative action|accommodation"
+    r"|e-verify|drug[- ]free", re.I)
+JD_STOP_HEADING = re.compile(
+    r"^\W*(benefits|perks|about us|about the company|why join|our mission"
+    r"|what we offer)", re.I)
+JD_STOP_HEADING_WORDS = 6
 
 STOPWORDS = set("""
 a an and are as at be been being by for from has have in into is it its of on or
@@ -644,7 +652,8 @@ def jd_terms(jd):
     skip = False
     for line in lines:
         low = line.lower()
-        if JD_STOP_SECTIONS.search(low):
+        if JD_STOP_STRONG.search(low) or (
+                len(low.split()) <= JD_STOP_HEADING_WORDS and JD_STOP_HEADING.match(low)):
             skip = True
             continue
         if re.match(r"^\s*(requirement|qualification|what you|must have|you have)", low):
@@ -674,35 +683,44 @@ def jd_terms(jd):
             if all(w.lower() in STOPWORDS for w in words):
                 continue
             terms[p] = max(terms.get(p, 0), weight)
-    # Drop a term that is wholly contained in a longer retained term.
+    # Drop a term that is wholly contained in a longer retained term - as whole
+    # words, or "java" vanishes beside "javascript" and "sql" beside "postgresql".
     for t in list(terms):
-        if any(t != o and t in o for o in terms):
+        if any(t != o and has_term(t, o) for o in terms):
             terms.pop(t, None)
     return terms
+
+
+def has_term(term, text, stem=False):
+    """Is `term` in `text` as whole words? A plain substring test read "java"
+    in "javascript" and "go" in "good", hiding real gaps. With stem, only the
+    start is anchored, so "test" still finds "testing"."""
+    pat = r"(?<![\w+#])" + re.escape(term) + ("" if stem else r"(?![\w+#])")
+    return re.search(pat, text) is not None
 
 
 def classify(terms, text):
     low = text.lower()
     exact, near, missing = [], [], []
     for term, w in sorted(terms.items(), key=lambda kv: -kv[1]):
-        if term in low:
+        if has_term(term, low):
             exact.append((term, w))
             continue
         alts = SYNONYMS.get(term, [])
-        hit = next((a for a in alts if a in low), None)
+        hit = next((a for a in alts if has_term(a, low)), None)
         if hit:
             near.append((term, w, hit))
             continue
         # single-word stem match
         base = term.rstrip("s")
-        if len(base) > 4 and base in low:
+        if len(base) > 4 and has_term(base, low, stem=True):
             near.append((term, w, base))
             continue
         # Multi-word term whose words all appear, just not adjacently: the user
         # has the substance and only the JD's exact phrasing is absent, which is
         # a rewording opportunity rather than a gap.
         words = [x for x in term.split() if len(x) > 2]
-        if len(words) > 1 and all(x.rstrip("s") in low for x in words):
+        if len(words) > 1 and all(has_term(x.rstrip("s"), low, stem=True) for x in words):
             near.append((term, w, "has all of: " + ", ".join(words)))
             continue
         missing.append((term, w))
@@ -959,8 +977,15 @@ SOFFICE_FLATPAK = ["flatpak", "run",
                    "--command=/app/libreoffice/program/soffice",
                    "org.libreoffice.LibreOffice"]
 
-# Staging root for renders. A module constant so tests can redirect it.
-RENDER_CACHE = os.path.join("~", ".cache", "odt_text")
+# Staging root for renders, and home of the canon geometry cache. A module
+# constant so tests can redirect it; ODT_TEXT_CACHE does the same for a subprocess.
+RENDER_CACHE = os.environ.get("ODT_TEXT_CACHE") or os.path.join("~", ".cache", "odt_text")
+
+# A LibreOffice profile of its own. Without one, a LibreOffice already open on
+# the desktop (editing canon, say) captures the conversion - soffice hands a
+# second launch to the running instance, which can silently produce nothing.
+# Persistent, so only the first render pays for initializing it.
+SOFFICE_PROFILE = os.path.join("~", ".cache", "odt_text", "lo-profile")
 
 
 @functools.lru_cache(maxsize=1)
@@ -1010,9 +1035,11 @@ def to_pdf(odt):
     try:
         staged = os.path.join(out, os.path.basename(odt))
         shutil.copy(odt, staged)
+        profile = pathlib.Path(os.path.expanduser(SOFFICE_PROFILE)).resolve().as_uri()
         try:
             subprocess.run(
-                soffice + ["--headless", "--convert-to", "pdf", "--outdir", out, staged],
+                soffice + ["-env:UserInstallation=" + profile, "--headless",
+                           "--convert-to", "pdf", "--outdir", out, staged],
                 check=True, capture_output=True, timeout=180)
         except (OSError, subprocess.SubprocessError):
             return None
@@ -1083,12 +1110,14 @@ def _squash(text):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
 
 
-def render_layout(odt_path):
+def render_layout(odt_path, keep_pdf=None):
     """Render odt_path and measure it, or None if no renderer is available.
 
     Returns pages, the deepest text edge (`last`, points), every text line in
     reading order with its box and page, the flat text a parser would extract,
-    and any substituted fonts. The PDF is deleted before this returns.
+    and any substituted fonts. The PDF is deleted before this returns, unless
+    keep_pdf names where to move it: fill exports the very render it measured
+    rather than paying for a second one.
     """
     pdf = to_pdf(odt_path)
     if not pdf:
@@ -1100,6 +1129,8 @@ def render_layout(odt_path):
         bbox = run("pdftotext", "-bbox-layout", pdf, "-")
         flat = run("pdftotext", "-layout", pdf, "-")
         subs = substituted_fonts(odt_path, pdf)
+        if keep_pdf:
+            shutil.move(pdf, keep_pdf)
     except OSError:
         return None
     finally:
@@ -1213,8 +1244,59 @@ def page_report(odt_path, mapping):
     else:
         spare = int((safe - (layout["last"] or safe)) // pitch)
     layout.update(geo=geo, order=[u for u, _ in bullets], hard=hard, safe=safe,
-                  pitch=pitch, spare=spare, filled=bool(mapping))
+                  pitch=pitch, spare=spare, filled=bool(mapping), n_lines=len(lines))
     return layout
+
+
+# Canon does not change during a batch, so check reuses its geometry instead of
+# rendering it again on every call. Only geometry is stored - never line text,
+# which holds real values when the render was filled from the map. The key is
+# the file and map as they stand, so editing either one invalidates it.
+GEOMETRY_CACHE_VERSION = 1
+
+
+def _geometry_key(path, map_path):
+    def sig(p):
+        try:
+            st = os.stat(p)
+        except (OSError, TypeError):
+            return None
+        return [os.path.abspath(p), st.st_mtime_ns, st.st_size]
+    return [GEOMETRY_CACHE_VERSION, sig(path), sig(map_path), find_soffice()]
+
+
+def _geometry_file():
+    return os.path.join(os.path.expanduser(RENDER_CACHE), "canon-geometry.json")
+
+
+def cached_geometry(path, map_path):
+    """What check needs of canon's page report, from an earlier render of this
+    exact file and map, or None."""
+    try:
+        with open(_geometry_file(), encoding="utf-8") as fh:
+            entry = json.load(fh)
+        if entry["key"] != _geometry_key(path, map_path):
+            return None
+        return {"n_lines": entry["n_lines"], "spare": entry["spare"],
+                "geo": {k: tuple(v) for k, v in entry["geo"].items()},
+                "substitutes": []}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def store_geometry(path, map_path, report):
+    if report is None or report["substitutes"]:
+        return
+    entry = {"key": _geometry_key(path, map_path), "n_lines": report["n_lines"],
+             "spare": report["spare"], "geo": report["geo"]}
+    target = _geometry_file()
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target + ".tmp", "w", encoding="utf-8") as fh:
+            json.dump(entry, fh)
+        os.replace(target + ".tmp", target)
+    except OSError:
+        pass
 
 
 def unmeasurable(report, path):
@@ -1244,6 +1326,7 @@ def cmd_budget(args):
     if why:
         print("FAIL: budget cannot be measured: %s" % why)
         sys.exit(1)
+    store_geometry(args.resume, args.map, report)
     last, safe, hard = report["last"], report["safe"], report["hard"]
     print("measured: %s" % describe_measurement(report))
     print("pages: %d" % report["pages"])
@@ -1394,7 +1477,7 @@ def cmd_fill(args):
     if not (is_filled_name(stem) or in_private):
         sys.exit(
             "fill: refusing to write %s - a filled resume must land on a\n"
-            "gitignored path. Name it <Name>_Resume.odt or put it under private/."
+            "gitignored path. Name it <Name>_Resume.pdf or put it under private/."
             % args.output)
 
     content = read_content(args.resume)
@@ -1432,12 +1515,13 @@ def cmd_fill(args):
         as_pdf = args.output.lower().endswith(".pdf")
         staging = (os.path.splitext(args.output)[0] + ".partial.odt" if as_pdf
                    else args.output + ".partial")
+        rendered = os.path.splitext(staging)[0] + ".pdf" if as_pdf else None
         write_odt(args.resume, staging, content)
 
         hard = page_bottom_limit(staging)
         safe = hard - SAFE_RESERVE_PT
         try:
-            report = render_layout(staging)
+            report = render_layout(staging, keep_pdf=rendered)
             why = unmeasurable(report, staging)
         except Exception as e:
             report, why = None, "PDF conversion failed (%s)" % e
@@ -1465,7 +1549,12 @@ def cmd_fill(args):
             elif last > safe:
                 warnings.append("less than 0.25in reserve left (%.2fpt)" % last)
 
-        if as_pdf and not problems:
+        if as_pdf and not problems and os.path.exists(rendered):
+            os.replace(rendered, args.output)
+            os.remove(staging)
+            print("wrote %s" % args.output)
+        elif as_pdf and not problems:
+            # Only reached unmeasured, under --no-page-check.
             pdf = to_pdf(staging)
             if not pdf:
                 problems.append("PDF export failed: LibreOffice is required "
@@ -1483,8 +1572,9 @@ def cmd_fill(args):
             os.replace(staging, args.output)
             print("wrote %s" % args.output)
         if problems:
-            if os.path.exists(staging):
-                os.remove(staging)
+            for leftover in (staging, rendered):
+                if leftover and os.path.exists(leftover):
+                    os.remove(leftover)
             problems.append("no file was written")
 
     for w in warnings:
@@ -1503,15 +1593,14 @@ def cmd_check(args):
     out = read_content(args.output)
     problems, warnings = [], []
 
-    cu = {u["id"]: u for u in extract_units(canon)}
-    ou = {u["id"]: u for u in extract_units(out)}
+    canon_units, out_units = extract_units(canon), extract_units(out)
+    cu = {u["id"]: u for u in canon_units}
+    ou = {u["id"]: u for u in out_units}
 
     # Diff by content, not by id: bullet ids are positional, so one insert
     # shifts every later id and an id-keyed diff reports moves as rewrites.
-    import difflib
-
-    ca = [u["text"] for u in extract_units(canon) if u["kind"] == "bullet"]
-    ob = [u["text"] for u in extract_units(out) if u["kind"] == "bullet"]
+    ca = [u["text"] for u in canon_units if u["kind"] == "bullet"]
+    ob = [u["text"] for u in out_units if u["kind"] == "bullet"]
     print("=== bullet changes ===")
     sm = difflib.SequenceMatcher(None, ca, ob, autojunk=False)
     gone, came, reworded = [], [], []
@@ -1549,7 +1638,7 @@ def cmd_check(args):
         return {(u["section"], u["left"]): u
                 for u in units if u["kind"] == "header"}
 
-    ha, hb = by_name(extract_units(canon)), by_name(extract_units(out))
+    ha, hb = by_name(canon_units), by_name(out_units)
     for key in sorted(set(ha) & set(hb)):
         for f in ("mid", "right"):
             if ha[key].get(f) != hb[key].get(f):
@@ -1563,9 +1652,9 @@ def cmd_check(args):
         changed_other = True
         print("  + header added:   %s" % key[1])
 
-    order_a = [u["left"] for u in extract_units(canon)
+    order_a = [u["left"] for u in canon_units
                if u["kind"] == "header" and u["section"] == "PROJECTS"]
-    order_b = [u["left"] for u in extract_units(out)
+    order_b = [u["left"] for u in out_units
                if u["kind"] == "header" and u["section"] == "PROJECTS"]
     if order_a != order_b and sorted(order_a) == sorted(order_b):
         changed_other = True
@@ -1626,8 +1715,12 @@ def cmd_check(args):
         out_rep = page_report(args.output, mapping)
         why = unmeasurable(out_rep, args.output)
         if not why:
-            canon_rep = page_report(args.canon, mapping)
-            why = unmeasurable(canon_rep, args.canon)
+            canon_rep = cached_geometry(args.canon, args.map)
+            if canon_rep is None:
+                canon_rep = page_report(args.canon, mapping)
+                why = unmeasurable(canon_rep, args.canon)
+                if not why:
+                    store_geometry(args.canon, args.map, canon_rep)
     except Exception as e:
         why = "PDF conversion failed (%s)" % e
     if why:
@@ -1656,7 +1749,7 @@ def cmd_check(args):
         # Line budget: edits may not add lines canon has no room for. This is
         # stricter than the margin check on purpose - it fails at the safe
         # buffer, before a different renderer's metrics can tip the page.
-        added = len(out_rep["lines"]) - len(canon_rep["lines"])
+        added = out_rep["n_lines"] - canon_rep["n_lines"]
         print("  lines %+d vs canon; canon had %d spare above the safe buffer"
               % (added, canon_rep["spare"]))
         if added > 0 and added > max(canon_rep["spare"], 0):
@@ -1753,11 +1846,31 @@ def write_state(folder, state):
     os.replace(path + ".tmp", path)
 
 
+BATCH_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def application_folders(root):
+    """Every application under root: applications/<batch>/<folder>, or a
+    folder directly under root from before batches got their own directory."""
     if not os.path.isdir(root):
         return []
-    return sorted(os.path.join(root, d) for d in os.listdir(root)
-                  if os.path.isfile(os.path.join(root, d, STATE_FILE)))
+    found = []
+    for d in os.listdir(root):
+        path = os.path.join(root, d)
+        if os.path.isfile(os.path.join(path, STATE_FILE)):
+            found.append(path)
+        elif BATCH_DIR_RE.match(d) and os.path.isdir(path):
+            found += [os.path.join(path, s) for s in os.listdir(path)
+                      if os.path.isfile(os.path.join(path, s, STATE_FILE))]
+    return sorted(found)
+
+
+def applications_root(folder):
+    """The applications/ directory a folder belongs to, batch directory or not."""
+    parent = os.path.dirname(os.path.normpath(folder)) or "."
+    if BATCH_DIR_RE.match(os.path.basename(parent)):
+        return os.path.dirname(parent) or "."
+    return parent
 
 
 # ---------------------------------------------------------------- fetching
@@ -2064,8 +2177,9 @@ def cmd_split(args):
     if not postings:
         sys.exit("split: %s holds no postings." % args.inbox)
 
-    os.makedirs(args.into, exist_ok=True)
-    taken = set(os.listdir(args.into))
+    batch_dir = os.path.join(args.into, args.date)
+    os.makedirs(batch_dir, exist_ok=True)
+    taken = set(os.listdir(batch_dir))
     failed = []
     written = n = 0
     fetched = False
@@ -2086,7 +2200,7 @@ def cmd_split(args):
         n += 1
         while "%s_posting-%02d" % (args.date, n) in taken:
             n += 1
-        folder = os.path.join(args.into, "%s_posting-%02d" % (args.date, n))
+        folder = os.path.join(batch_dir, "%s_posting-%02d" % (args.date, n))
         os.makedirs(folder)
         trimmed, cut = (text, 0) if args.no_trim else trim_tail(text)
         if cut:
@@ -2122,9 +2236,15 @@ def cmd_name(args):
     state = read_state(folder)
     key = "%s_%s" % (slug(args.company), slug(args.role))
 
-    earlier = [os.path.basename(f) for f in application_folders(root)
-               if os.path.normpath(f) != folder
-               and os.path.basename(f).split("_", 1)[-1] == key]
+    # Search every batch, not just this one's directory, and see past the -N
+    # suffix a same-batch repeat gets - otherwise a third application to the
+    # same role, or one in a later batch, is never flagged.
+    def same_role(f):
+        part = os.path.basename(f).split("_", 1)[-1]
+        return part == key or re.sub(r"-\d+$", "", part) == key
+
+    earlier = [os.path.basename(f) for f in application_folders(applications_root(folder))
+               if os.path.normpath(f) != folder and same_role(f)]
 
     target = os.path.join(root, "%s_%s" % (state["batch"], key))
     n = 2

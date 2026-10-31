@@ -1,6 +1,8 @@
 ---
 name: resume-ats-optimizer
 description: Tailor canon_resume.odt to a batch of job postings (one or many) - surface the gaps across all of them, settle them in one consultation, then make small verbatim-voice edits per posting and verify each result still parses and fits one page. Use when the user pastes job postings or fills postings/inbox.txt and wants their resume adjusted, mentions ATS, keyword match, or tailoring a resume to a role.
+model: sonnet
+allowed-tools: Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py *)
 ---
 
 # Resume tailoring against a batch of postings
@@ -25,13 +27,13 @@ user applies to is private.
 - `postings/inbox.txt` - where the user pastes postings, a line of `=====` between each.
   An entry may be a posting's full text or just its URL. `split` empties it, except for
   any URL it could not read.
-- `applications/<batch>_<company>_<role>/` - one folder per application:
+- `applications/<batch>/<batch>_<company>_<role>/` - one folder per application:
   `posting.txt`, `state.json` (its stage, and `source` when fetched from a URL),
   `posting.full.txt` (the untrimmed posting - see Phase 0 step 6; never read it),
   `consultation.md` (proposal and answers),
   `edits.json`, `<PREFIX>_Resume_tokenized.odt`, `<PREFIX>_Resume.pdf` (the
   one to submit).
-- `applications/<batch>_batch-summary.md` - the batch summary, one per batch.
+- `applications/<batch>/<batch>_batch-summary.md` - the batch summary, one per batch.
 - `experience.md` - the **Experience ledger** (below).
 
 ## Experience ledger
@@ -152,25 +154,9 @@ parsing, and that list is short:
 - **No new structure.** No added sections, headings, tables, columns, or graphics. This
   editor parses units under `EDUCATION`, `SKILLS`, `EXPERIENCE`, and `PROJECTS`.
 
-`check` enforces the same idea mechanically on the bullets you changed, reading canon
-first and judging edits against it rather than against a fixed style:
-
-- **Punctuation forms follow canon.** Apostrophes and quotes must be whichever form
-  canon's own prose settled on - it has no preference between straight and curly, only
-  that one document uses one of them. A canon that uses neither leaves the choice open.
-- **A character canon's prose never uses is suspect.** Known model-or-paste tells (em
-  dash, ellipsis character, curly quotes in a straight-quote document, glyph bullets,
-  non-breaking space) fail; any other unfamiliar non-ASCII character warns, on the ATS
-  grounds above. A canon that already uses em dashes in its bullets keeps them.
-- **Boilerplate phrases fail** (*spearheaded, orchestrated, seamlessly, robust,
-  cutting-edge, utilized, impactful, key stakeholder, best-in-class, synerg-, delve,
-  tapestry, testament to*) **unless canon uses the word itself**, in which case it is the
-  user's vocabulary and passes.
-- **Sentence count warns against canon's longest bullet**, not against one sentence.
-
-So the lint tightens around whatever canon does. If it fires on something canon plainly
-does too, that is a bug in `scripts/odt_text.py` worth reporting - never an argument for
-rewriting the user's document to satisfy it.
+`check` lints changed bullets against canon's own conventions - punctuation forms,
+characters canon never uses, boilerplate phrases, sentence count. When it fails on a
+voice rule, read `references/check-lint.md` before revising.
 
 ## Fundamental misalignment
 
@@ -222,11 +208,8 @@ Set a stage with `python3 $SCRIPT stage <folder> <stage> [--note "..."]`.
 
 ### Phase 0 - setup (once per batch)
 
-1. **Model check.** State the active model. **Only the Sonnet family runs this skill.**
-   On anything else - Haiku or an older small model below it, and Opus or Fable above
-   it - **stop immediately** and tell the user to run `/model sonnet` and re-invoke.
-   The larger models are not an acceptable substitute here: this runs dozens of times a
-   week and Sonnet is the tier it is written and budgeted for.
+1. **Model.** The frontmatter pins this skill to Sonnet, the tier it is written and
+   budgeted for. Nothing to check or say.
 
 2. **Confirm canon exists.** `canon_resume.odt` is deliberately not in the repository -
    it is the user's own document and stays local, so a fresh clone does not have one.
@@ -244,7 +227,7 @@ Set a stage with `python3 $SCRIPT stage <folder> <stage> [--note "..."]`.
      instead) and ask what the file is, single-select: a resume in a layout this editor
      cannot parse; a resume in the expected layout after all; not a resume. Never state
      what you think the document is - `shape` recognizes one shape and cannot identify
-     anything else. Act on the answer per the **Not-a-resume gate**.
+     anything else. Then read `references/document-gate.md` and act on the answer.
 
    The verdict is a document-type check. It is never a quality judgment and never a
    score - it does not enter the summary, and it is never described to the user as a
@@ -276,7 +259,7 @@ Set a stage with `python3 $SCRIPT stage <folder> <stage> [--note "..."]`.
    - **Open applications:** `python3 $SCRIPT status`. Anything listed is an unfinished
      earlier batch; it joins this one at its recorded stage. Mention it in one line.
    - **Inbox:** if `postings/inbox.txt` has content, run `python3 $SCRIPT split`. It
-     creates one `applications/<today>_posting-NN/` folder per posting, at stage `new`,
+     creates one `applications/<today>/<today>_posting-NN/` folder per posting, at stage `new`,
      and empties the inbox. An entry that is only a URL is fetched by `split` itself,
      which writes the posting straight to disk and never prints it.
    - **Trimmed tails:** `split` also cuts each posting's closing boilerplate
@@ -316,24 +299,6 @@ Set a stage with `python3 $SCRIPT stage <folder> <stage> [--note "..."]`.
    unverified per step 4.
 
 8. **Read `experience.md`** if it exists.
-
-### Not-a-resume gate
-
-Acted on only when step 3 asked the document-type question.
-
-- **Not a resume.** **Hard stop** for the whole batch. No `.odt` and no summary - there
-  is nothing to tailor. Say in one message that `canon_resume.odt` is not a resume and
-  has to be replaced with one. Do not offer to write a resume, and do not tailor it
-  anyway if asked to "just try". Leave the inbox and any split folders as they are.
-- **A resume in a layout this editor cannot parse.** Also stop, same way, but the
-  message is different: the document is fine, the editor is the limitation. It edits
-  units under the headings `EDUCATION`, `SKILLS`, `EXPERIENCE`, and `PROJECTS`, and it
-  found the headings `shape` listed instead. Say what renaming would take, and that this
-  is their call to make - **never rewrite their resume's structure to fit the tool.**
-- **A resume in the expected layout after all.** `shape` is a heuristic and the user's
-  answer wins, so continue. But if `shape` reported `0 units`, nothing is editable no
-  matter what the document is: say so and stop rather than inventing an edit set
-  against text the editor cannot see.
 
 ### Phase 1 - analyze (no questions, nothing tailored)
 
@@ -469,7 +434,7 @@ list.
 
 ### Phase 4 - wrap up
 
-1. **Write `applications/<batch>_batch-summary.md`**, reading
+1. **Write `applications/<batch>/<batch>_batch-summary.md`**, reading
    `references/batch-summary-template.md` at this point and not before. If that file
    exists from an earlier batch the same day, add `-2`. `python3 $SCRIPT status --batch
    <batch>` lists what to cover. Keep it terse - tables, not prose; summary tokens are
@@ -490,5 +455,5 @@ compounds.
 Runs dozens of times a week, 10+ postings at a sitting. The script does all mechanical
 work at zero token cost; `match` returns only interesting rows. Canon is extracted and
 measured once per batch, not once per posting. Postings arrive through the inbox file
-rather than being re-typed. Keep `consultation.md` and the summary terse, and read the
-summary template only in Phase 4.
+rather than being re-typed. Keep `consultation.md` and the summary terse. Read each file under `references/` only when its trigger fires - the
+summary template in Phase 4, the others on the failure they explain.

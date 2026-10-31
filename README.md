@@ -29,7 +29,7 @@ pii.txt                   real values for the [Token]s - local only, gitignored,
 canon_resume_preview.pdf  LibreOffice render of canon, regenerable, gitignored
 migration/                edit sets that built your canon, if you keep any - gitignored
 postings/inbox.txt        where you paste postings - gitignored
-applications/             one folder per application - gitignored
+applications/             one folder per batch, one per application inside - gitignored
 experience.md             the Experience ledger - gitignored
 ```
 
@@ -37,7 +37,7 @@ experience.md             the Experience ledger - gitignored
 without one and the skill aborts on its first run and asks you to add it. Save your
 résumé as `canon_resume.odt` in the repo root before invoking.
 
-Each application gets its own folder, `applications/<date>_<company>_<role>/`, holding
+Each application gets its own folder, `applications/<date>/<date>_<company>_<role>/`, holding
 the posting, the edit set, the tokenized `<First>_<Last>_Resume_tokenized.odt`, and the
 `<First>_<Last>_Resume.pdf` you submit. The folders are gitignored and are the
 archive of past applications — nothing to commit between them, and nothing overwritten
@@ -136,7 +136,6 @@ and `check` fails unless you pass `--no-page-check` to accept that.
 ## Use
 
 ```
-/model sonnet          # the skill hard-stops on anything but Sonnet
 /resume-ats-optimizer  # after filling postings/inbox.txt, or with one posting pasted
 ```
 
@@ -165,7 +164,7 @@ as `posting.full.txt`; `split --no-trim` skips trimming.
 3. **Apply.** Every application is tailored, checked, and filled without pausing.
    Anything it cannot fix on its own lands on a "needs you" list instead of stopping
    the batch.
-4. **Wrap up.** One `applications/<date>_batch-summary.md` and a short chat reply listing
+4. **Wrap up.** One `applications/<date>/<date>_batch-summary.md` and a short chat reply listing
    what is ready to submit.
 
 It asks about gaps **before** writing anything, because a keyword missing from the

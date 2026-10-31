@@ -8,8 +8,9 @@ Two rules, both enforced against every tool call:
      names it on the command line, so nothing legitimate needs an allowance.
 
   B. Filled resumes are write-only. Claude runs `fill` to produce
-     <PREFIX>_Resume.odt (the tokenized copy is <PREFIX>_Resume_tokenized.odt) but must never read the result back, or the
-     isolation in rule A is pointless.
+     <PREFIX>_Resume.pdf (the tokenized copy is <PREFIX>_Resume_tokenized.odt)
+     but must never read the result back, or the isolation in rule A is
+     pointless.
 
 Rule A tests path-like fields and Bash command strings, deliberately NOT file
 contents: the README and SKILL.md have to be able to document pii.txt in prose

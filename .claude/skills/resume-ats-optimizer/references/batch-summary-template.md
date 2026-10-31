@@ -1,6 +1,6 @@
 # Batch summary template
 
-Write to `applications/<batch>_batch-summary.md`. Terse - tables, not prose. Never
+Write to `applications/<batch>/<batch>_batch-summary.md`. Terse - tables, not prose. Never
 restate the consultation at length; the user already read it. Each application's
 `edits.json` holds the exact changes, so the summary names them rather than quoting
 every before/after.

@@ -38,9 +38,13 @@ class TempCase(unittest.TestCase):
     def odt(self, name="canon.odt", content=None, styles=None):
         return helpers.make_odt(self.path(name), content, styles)
 
+    def env(self):
+        """Renders and the canon geometry cache stay inside this test's tmp dir."""
+        return dict(os.environ, ODT_TEXT_CACHE=self.path("cache"))
+
     def run_cli(self, *args):
         return subprocess.run([sys.executable, SCRIPT] + list(args),
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env=self.env())
 
     def run_stubbed(self, patch, *args):
         """Run the CLI with one line of monkeypatching applied first."""
@@ -49,7 +53,8 @@ class TempCase(unittest.TestCase):
             fh.write("import sys\nsys.path.insert(0, %r)\nimport odt_text\n%s\n"
                      "sys.argv = ['odt_text'] + %r\nodt_text.main()\n"
                      % (helpers.SCRIPTS, patch, list(args)))
-        return subprocess.run([sys.executable, stub], capture_output=True, text=True)
+        return subprocess.run([sys.executable, stub], capture_output=True, text=True,
+                              env=self.env())
 
 
 class TestNormalize(TempCase):
@@ -263,7 +268,7 @@ class TestFill(TempCase):
         mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
         out = self.path("o_filled.odt")
         res = self.run_stubbed(
-            "odt_text.render_layout = lambda p: %r" % fake_layout(pages=2, last=900.0),
+            "odt_text.render_layout = lambda p, **k: %r" % fake_layout(pages=2, last=900.0),
             "fill", src, "--map", mp, "-o", out)
         self.assertNotEqual(res.returncode, 0, "a 2-page fill was reported as OK")
         self.assertFalse(os.path.exists(out),
@@ -274,7 +279,7 @@ class TestFill(TempCase):
         src = self.odt()
         mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
         out = self.path("o_filled.odt")
-        res = self.run_stubbed("odt_text.render_layout = lambda p: None",
+        res = self.run_stubbed("odt_text.render_layout = lambda p, **k: None",
                                "fill", src, "--map", mp, "-o", out)
         self.assertNotEqual(res.returncode, 0, "an unmeasured fill passed")
         self.assertIn("--no-page-check", res.stdout)
@@ -284,7 +289,7 @@ class TestFill(TempCase):
         src = self.odt()
         mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
         out = self.path("o_filled.odt")
-        res = self.run_stubbed("odt_text.render_layout = lambda p: None",
+        res = self.run_stubbed("odt_text.render_layout = lambda p, **k: None",
                                "fill", src, "--map", mp, "-o", out, "--no-page-check")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn("SKIPPED", res.stdout)
@@ -295,7 +300,7 @@ class TestFill(TempCase):
         mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
         out = self.path("o_filled.odt")
         res = self.run_stubbed(
-            "odt_text.render_layout = lambda p: %r" % fake_layout(subs=["NotoSerif"]),
+            "odt_text.render_layout = lambda p, **k: %r" % fake_layout(subs=["NotoSerif"]),
             "fill", src, "--map", mp, "-o", out)
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("NotoSerif", res.stdout)
@@ -418,13 +423,13 @@ class TestCheckGate(TempCase):
 
     def test_no_renderer_fails_check(self):
         src, out = self._edited()
-        res = self.run_stubbed("odt_text.render_layout = lambda p: None",
+        res = self.run_stubbed("odt_text.render_layout = lambda p, **k: None",
                                "check", src, out, "--map", self.path("none.txt"))
         self.assertNotEqual(res.returncode, 0, "an unmeasured check said OK")
 
     def test_no_page_check_passes_with_a_skip_warning(self):
         src, out = self._edited()
-        res = self.run_stubbed("odt_text.render_layout = lambda p: None",
+        res = self.run_stubbed("odt_text.render_layout = lambda p, **k: None",
                                "check", src, out, "--map", self.path("none.txt"),
                                "--no-page-check")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
@@ -436,12 +441,99 @@ class TestCheckGate(TempCase):
         # with two lines; the output renders three.
         three = [line("x", 54, 60, 724)] * 3
         two = [line("x", 54, 60, 724)] * 2
-        patch = ("_n = iter([%r, %r])\nodt_text.render_layout = lambda p: next(_n)"
+        patch = ("_n = iter([%r, %r])\nodt_text.render_layout = lambda p, **k: next(_n)"
                  % (fake_layout(last=736.0, lines=three),
                     fake_layout(last=736.0, lines=two)))
         res = self.run_stubbed(patch, "check", src, out, "--map", self.path("none.txt"))
         self.assertNotEqual(res.returncode, 0, res.stdout)
         self.assertIn("add 1 line", res.stdout)
+
+
+class TestMatch(unittest.TestCase):
+    def test_a_term_inside_a_longer_word_is_not_a_match(self):
+        exact, near, missing = m.classify({"java": 3, "go": 3, "sql": 3},
+                                          "javascript, good algorithms, postgresql")
+        self.assertEqual(exact, [])
+        self.assertEqual(sorted(t for t, _ in missing), ["go", "java", "sql"])
+
+    def test_whole_words_and_symbols_still_match(self):
+        exact, _, _ = m.classify({"c++": 3, "node.js": 3, "sql": 3},
+                                 "Built in C++ and Node.js against SQL Server")
+        self.assertEqual(sorted(t for t, _ in exact), ["c++", "node.js", "sql"])
+
+    def test_a_stem_still_finds_its_longer_form(self):
+        _, near, _ = m.classify({"pipelines": 2}, "built a ci pipeline")
+        self.assertEqual(near[0][0], "pipelines")
+
+    def test_java_survives_beside_javascript(self):
+        terms = m.jd_terms("Requirements\n- Java\n- JavaScript\n")
+        self.assertIn("java", terms)
+        self.assertIn("javascript", terms)
+
+    def test_benefits_mid_requirements_does_not_end_the_posting(self):
+        terms = m.jd_terms("Requirements\n- Understand the benefits of unit tests\n"
+                           "- Kubernetes\n")
+        self.assertIn("kubernetes", terms)
+
+    def test_a_benefits_heading_still_ends_the_posting(self):
+        terms = m.jd_terms("Requirements\n- Kubernetes\nBenefits\n- Dental coverage\n")
+        self.assertIn("kubernetes", terms)
+        self.assertNotIn("dental coverage", terms)
+
+
+class TestCanonGeometryCache(TempCase):
+    def setUp(self):
+        super().setUp()
+        self.original = m.RENDER_CACHE
+        m.RENDER_CACHE = self.path("cache")
+        self.addCleanup(setattr, m, "RENDER_CACHE", self.original)
+
+    def report(self, subs=()):
+        return {"n_lines": 40, "spare": 2, "geo": {"exp1.b1": (2, 10)},
+                "substitutes": list(subs), "lines": [{"text": "Ada Lovelace"}]}
+
+    def test_round_trip_keeps_geometry_and_drops_text(self):
+        src = self.odt()
+        m.store_geometry(src, None, self.report())
+        got = m.cached_geometry(src, None)
+        self.assertEqual(got["n_lines"], 40)
+        self.assertEqual(got["geo"], {"exp1.b1": (2, 10)})
+        with open(m._geometry_file(), encoding="utf-8") as fh:
+            self.assertNotIn("Ada Lovelace", fh.read())
+
+    def test_editing_canon_or_the_map_invalidates_it(self):
+        src = self.odt()
+        mp = helpers.write_map(self.path("map.txt"), helpers.FAKE_VALUES)
+        m.store_geometry(src, mp, self.report())
+        self.assertIsNotNone(m.cached_geometry(src, mp))
+        with open(mp, "a", encoding="utf-8") as fh:
+            fh.write("# edited\n")
+        self.assertIsNone(m.cached_geometry(src, mp))
+
+    def test_a_substituted_font_render_is_never_cached(self):
+        src = self.odt()
+        m.store_geometry(src, None, self.report(subs=["NotoSerif"]))
+        self.assertIsNone(m.cached_geometry(src, None))
+
+    def test_check_renders_canon_once_across_runs(self):
+        import json
+        src = self.odt()
+        epath = self.path("edits.json")
+        with open(epath, "w", encoding="utf-8") as fh:
+            json.dump({"replace": {"exp1.b1": "Plain bullet text."}}, fh)
+        out = self.path("out.odt")
+        self.run_cli("apply", src, epath, "-o", out)
+        counter = self.path("renders.txt")
+        patch = ("def fake(p, **k):\n"
+                 "    open(%r, 'a').write(p + '\\n')\n"
+                 "    return %r\n"
+                 "odt_text.render_layout = fake" % (counter, fake_layout()))
+        for _ in range(2):
+            self.run_stubbed(patch, "check", src, out, "--map", self.path("none.txt"))
+        with open(counter, encoding="utf-8") as fh:
+            rendered = fh.read().split()
+        self.assertEqual(rendered.count(src), 1, rendered)
+        self.assertEqual(rendered.count(out), 2, rendered)
 
 
 class TestShape(TempCase):
@@ -662,10 +754,34 @@ class TestBatch(TempCase):
         res = self.run_cli("name", new, "ACME corp", "Backend  Engineer")
         self.assertIn("DUPLICATE: already applied to this company and role: "
                       "2025-06-01_acme-corp_backend-engineer", res.stdout)
-        named = os.path.join(self.apps, "2026-01-02_acme-corp_backend-engineer")
+        named = os.path.join(self.apps, "2026-01-02", "2026-01-02_acme-corp_backend-engineer")
         self.assertTrue(os.path.isdir(named))
         self.assertEqual(m.read_state(named)["duplicate_of"],
                          ["2025-06-01_acme-corp_backend-engineer"])
+
+    def test_split_files_postings_under_their_batch(self):
+        self.split("A\n")
+        folder, = m.application_folders(self.apps)
+        self.assertEqual(os.path.dirname(folder), os.path.join(self.apps, "2026-01-02"))
+
+    def test_status_sees_nested_and_flat_folders(self):
+        self.split("A\n")
+        flat = os.path.join(self.apps, "2025-01-01_old_role")
+        os.makedirs(flat)
+        m.write_state(flat, {"stage": "applied", "batch": "2025-01-01"})
+        res = self.run_cli("status", self.apps)
+        self.assertIn("2026-01-02_posting-01", res.stdout)
+        self.assertIn(flat, res.stdout)
+
+    def test_a_suffixed_repeat_is_still_a_duplicate(self):
+        self.split("A\n=====\nB\n", date="2025-06-01")
+        a, b = m.application_folders(self.apps)
+        self.run_cli("name", a, "Acme", "Dev")
+        self.run_cli("name", b, "Acme", "Dev")
+        self.split("C\n")
+        new = [f for f in m.application_folders(self.apps) if "posting" in f][0]
+        res = self.run_cli("name", new, "Acme", "Dev")
+        self.assertIn("2025-06-01_acme_dev, 2025-06-01_acme_dev-2", res.stdout)
 
     def test_same_role_twice_in_one_batch_gets_a_suffix(self):
         self.split("A\n=====\nB\n")
