@@ -114,6 +114,20 @@ class TestAllowsLegitimateWork(unittest.TestCase):
         cmd = "python3 odt_text.py fill canon_resume.odt -o Out_Resume_filled.odt"
         self.assertIsNone(bash(cmd))
 
+    def test_fill_through_a_script_variable_is_allowed(self):
+        """`S=odt_text.py; python3 $S fill` was judged a reader before variables were expanded."""
+        for cmd in ("S=odt_text.py; python3 $S fill a.odt -o d/Out_Resume.pdf",
+                    "S=odt_text.py d=app; python3 ${S} fill $d/a.odt -o $d/Out_Resume.pdf",
+                    'S="odt_text.py"; python3 $S fill a.odt -o x/Out_Resume.pdf'):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(bash(cmd))
+
+    def test_assigned_variable_naming_the_map_is_denied(self):
+        self.assertEqual(bash("p=pii; cat $p.txt"), g.PII_REASON)
+
+    def test_assigned_variable_naming_a_filled_resume_is_denied(self):
+        self.assertEqual(bash("f=Out_Resume.pdf; cat $f"), g.FILLED_REASON)
+
     def test_writing_a_filled_output_is_allowed(self):
         self.assertIsNone(tool("Write", file_path="notes.md"))
 
@@ -148,8 +162,9 @@ class TestAcknowledgedGaps(unittest.TestCase):
     def test_directory_wide_sweep_is_not_caught(self):
         self.assertIsNone(bash("grep -r . ."))
 
-    def test_variable_indirection_is_not_caught(self):
-        self.assertIsNone(bash("p=pii; cat $p.txt"))
+    def test_variable_set_outside_the_command_is_not_caught(self):
+        """Only assignments visible in the same command are expanded."""
+        self.assertIsNone(bash("cat $MAPFILE"))
 
 
 if __name__ == "__main__":

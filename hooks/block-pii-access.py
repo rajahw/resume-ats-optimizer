@@ -26,7 +26,10 @@ This is a guardrail against reaching the map by accident or by the obvious
 route. It matches filenames in commands, so it cannot see through:
 
   - a directory-wide sweep that never names the file (`grep -r . .`)
-  - shell indirection that assembles the name at runtime (`p=pii; cat $p.txt`)
+  - shell indirection that is not a literal NAME=value in the same command
+    (an exported variable, `$(echo pii).txt`). Literal assignments in the line
+    ARE expanded before matching, so `p=pii; cat $p.txt` is denied and
+    `S=odt_text.py; python3 $S fill ...` is not mistaken for a reader
   - a pre-existing symlink pointing at the map
   - a content search whose *pattern* is the secret (`Grep(pattern="<a real
     name>", path=".")`) - `pattern` is checked as a path, but for Grep it is
@@ -220,6 +223,49 @@ MALFORMED_REASON = (
 )
 
 
+ASSIGN_RE = re.compile(r"""(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|()]*)""")
+VAR_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def expand_assignments(command):
+    """Substitute $NAME / ${NAME} using literal NAME=value assignments in the line.
+
+    Only assignments visible in the same command count; anything else is left
+    as written. Quotes around a value are dropped, as the shell would.
+    """
+    env = {}
+    for name, value in ASSIGN_RE.findall(command):
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        env[name] = value
+    if not env:
+        return command
+
+    def sub(m):
+        return env.get(m.group(1) or m.group(2), m.group(0))
+
+    return VAR_RE.sub(sub, command)
+
+
+def decide_bash_line(command):
+    # Rule A applies to the whole line: redirection, substitution, any verb.
+    for seg in segments(command):
+        for arg in tokens_of(seg):
+            if hits_pii(arg):
+                return PII_REASON
+    if PII_FILE_REF.search(command):
+        return PII_REASON
+    # Rule B is scoped to segments that actually print contents.
+    for seg in segments(command):
+        toks = strip_wrappers(tokens_of(seg))
+        if not is_reader(toks):
+            continue
+        for arg in toks[1:]:
+            if hits_protected(arg):
+                return FILLED_REASON
+    return None
+
+
 def decide(payload):
     """The reason to deny this tool call, or None to allow it.
 
@@ -238,22 +284,11 @@ def decide(payload):
         command = tool_input.get("command")
         if not isinstance(command, str):
             return MALFORMED_REASON
-        # Rule A applies to the whole line: redirection, substitution, any verb.
-        for seg in segments(command):
-            for arg in tokens_of(seg):
-                if hits_pii(arg):
-                    return PII_REASON
-        if PII_FILE_REF.search(command):
-            return PII_REASON
-        # Rule B is scoped to segments that actually print contents.
-        for seg in segments(command):
-            toks = strip_wrappers(tokens_of(seg))
-            if not is_reader(toks):
-                continue
-            for arg in toks[1:]:
-                if hits_protected(arg):
-                    return FILLED_REASON
-        return None
+        # Judge the line the shell would run, with literal NAME=value
+        # assignments expanded: `S=odt_text.py; python3 $S fill ...` must be
+        # seen as running a script, not as a reader of `$S`'s arguments. The
+        # assignments stay in the text, so nothing the original names is lost.
+        return decide_bash_line(expand_assignments(command))
 
     for field in PATH_FIELDS:
         value = tool_input.get(field)
