@@ -20,7 +20,10 @@
       "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py name *)",
       "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py stage *)",
       "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py apply *)",
-      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py fill *)"
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py fill *)",
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py import *)",
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py init-map *)",
+      "Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py tokenize *)"
     ]
   },
   "hooks": {
@@ -32,7 +35,8 @@
             "type": "command",
             "command": "sh \"$CLAUDE_PROJECT_DIR/hooks/guard.sh\"",
             "timeout": 10,
-            "statusMessage": "Checking for PII access"
+            "statusMessage": "Checking for PII access",
+            "onFailure": "block"
           }
         ]
       }

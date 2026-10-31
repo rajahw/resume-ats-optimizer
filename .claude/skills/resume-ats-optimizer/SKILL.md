@@ -1,6 +1,6 @@
 ---
 name: resume-ats-optimizer
-description: Tailor canon_resume.odt to a batch of job postings (one or many) - surface the gaps across all of them, settle them in one consultation, then make small verbatim-voice edits per posting and verify each result still parses and fits one page. Use when the user pastes job postings or fills postings/inbox.txt and wants their resume adjusted, mentions ATS, keyword match, or tailoring a resume to a role.
+description: Tailor canon_resume.odt to a batch of job postings (one or many) - surface the gaps across all of them, settle them in one consultation, then make small verbatim-voice edits per posting and verify each result still parses and runs no longer than canon. Use when the user pastes job postings or fills postings/inbox.txt and wants their resume adjusted, mentions ATS, keyword match, or tailoring a resume to a role.
 model: sonnet
 allowed-tools: Bash(python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py *)
 ---
@@ -35,6 +35,8 @@ user applies to is private.
   one to submit).
 - `applications/<batch>/<batch>_batch-summary.md` - the batch summary, one per batch.
 - `experience.md` - the **Experience ledger** (below).
+- `private/canon_resume.orig.odt` - canon as it was before `tokenize`, real details and
+  all. Never read it.
 
 ## Experience ledger
 
@@ -44,8 +46,8 @@ one line per term, keyed by the posting's exact phrasing:
 ```markdown
 # Experience ledger
 
-- Kubernetes: yes (2026-10-11) - deployed two services to AKS at [Company1]
-- Go: no (2026-10-11)
+- Epic charting: yes (2026-10-11) - charted all assessments in Epic at [Company1]
+- Spanish fluency: no (2026-10-11)
 ```
 
 - **Read it in Phase 1, every batch.** A `yes` counts as confirmed experience under hard
@@ -84,7 +86,7 @@ real values, so it is the one never read back.
    in, and never silently written off: it goes to the user as a question first.
 3. **`[Token]` placeholders are literal and immutable to you.** Canon stands in for its
    own PII with bracketed tokens - whichever ones that particular document uses. The
-   README suggests a schema (`[Name]`, `[City]`, `[Email]`, `[Phone]`, `[University]`,
+   `init-map` template suggests a schema (`[Name]`, `[Email]`, `[Phone]`, `[City]`, `[School]`,
    `[Company1]`, ...) but it is a recommendation, not a requirement - a canon is free to
    use a different or additional token, and `fill` checks each one against `pii.txt` by
    what literally appears in canon, not against any fixed list. Never reword,
@@ -93,10 +95,12 @@ real values, so it is the one never read back.
    canon and `<PREFIX>_Resume_tokenized.odt` keep them forever. The `fill` command (Phase 3) is
    the only thing that ever replaces one, it does so mechanically from a file you
    cannot read, and it writes to a separate filled PDF (`<PREFIX>_Resume.pdf`).
-4. **Only bullets, Skills values, and header `.mid` (tech stack) fields are editable.**
-   Contact block, section headings, employers, project names, job titles, dates, degree,
-   and GPA are never touched - `apply` refuses a header `.left` or `.right` edit unless
-   it is given `--identity`, which only the one-time tokenization uses. Note that
+4. **Only bullets, Skills values, summary prose (`.p` units), and header `.mid`
+   fields are editable.** `.mid` is the detail segment after a `|` in an entry's header
+   (a tech stack, a unit, a specialty). Contact block, section headings, employers, entry
+   names, job titles, dates, degrees, licenses, and GPA are never touched - `apply`
+   refuses a header `.left` or `.right` edit unless given `--identity`, which a tailoring
+   run never uses. Note that
    `extract` surfaces `left` and `right` for context; being listed there does not make a
    field writable.
 5. **Mirror canon's own voice** (below).
@@ -152,7 +156,7 @@ parsing, and that list is short:
 - **Plain characters only.** Ordinary letters, digits, and punctuation; no decorative
   glyphs, ligatures, or symbol bullets, which parse unevenly.
 - **No new structure.** No added sections, headings, tables, columns, or graphics. This
-  editor parses units under `EDUCATION`, `SKILLS`, `EXPERIENCE`, and `PROJECTS`.
+  editor parses units under canon's own section headings - whatever `shape` listed.
 
 `check` lints changed bullets against canon's own conventions - punctuation forms,
 characters canon never uses, boilerplate phrases, sentence count. When it fails on a
@@ -166,12 +170,12 @@ Over-firing this rule talks the user out of applications they should make, which
 than a wasted application.
 
 **Disqualifying** - binary facts no wording supplies: a credential not held and not
-obtainable in time (graduate degree, licensure, required certification); legal
-eligibility (clearance, citizenship, work authorization); a start date that lands well
-before the availability canon states (an expected graduation date, for instance) on a
-role that is not an internship or co-op; a stated hard minimum of professional experience
-far above what canon shows, on a plainly non-entry-level posting; a different profession
-with no transferable technical basis.
+obtainable in time (a graduate degree; a license such as RN, CDL, CPA, or bar admission;
+a teaching or board certification); legal eligibility (clearance, citizenship, work
+authorization); a start date or schedule canon's stated availability rules out (a
+student's expected graduation date on a role that is not an internship, say); a stated
+hard minimum of professional experience far above what canon shows, on a plainly
+senior posting; a different profession with no transferable basis.
 
 **Not disqualifying:** missing "nice to have" items; year-count boilerplate ("3+ years")
 on a posting otherwise aimed at canon's level; an unfamiliar stack adjacent to something
@@ -208,15 +212,19 @@ Set a stage with `python3 $SCRIPT stage <folder> <stage> [--note "..."]`.
 
 ### Phase 0 - setup (once per batch)
 
-1. **Model.** The frontmatter pins this skill to Sonnet, the tier it is written and
-   budgeted for. Nothing to check or say.
+1. **Model.** Sonnet is the tier this skill is written and budgeted for. The
+   frontmatter's `model: sonnet` covers only the turn that invokes the skill - the
+   session model resumes when the user next replies. So whenever a reply resumes the
+   run (consultation answers, a fixed `pii.txt`), state the active model; if it is not
+   Sonnet, ask the user to run `/model sonnet` and reply again before continuing.
 
 2. **Confirm canon exists.** `canon_resume.odt` is deliberately not in the repository -
    it is the user's own document and stays local, so a fresh clone does not have one.
-   If it is missing from the working directory, **stop and ask for it**: they save their
-   resume as `canon_resume.odt` here and re-invoke. Never guess at another `.odt`, never
-   substitute a differently named file, and never offer to write a resume to stand in
-   for the missing one.
+   If it is missing from the working directory, **stop and ask for their resume file**.
+   When they name one - a Word file (`.docx`, `.doc`, `.rtf`; from Google Docs, File >
+   Download > Microsoft Word) or an `.odt` - run `python3 $SCRIPT import <file>`, which
+   writes canon and prints the `shape` report. Never guess at a file they did not name,
+   and never offer to write a resume to stand in for the missing one.
 
 3. **Run `python3 $SCRIPT shape canon_resume.odt`.** It reports whether the document
    parses as a resume this tool can edit.
@@ -228,6 +236,18 @@ Set a stage with `python3 $SCRIPT stage <folder> <stage> [--note "..."]`.
      cannot parse; a resume in the expected layout after all; not a resume. Never state
      what you think the document is - `shape` recognizes one shape and cannot identify
      anything else. Then read `references/document-gate.md` and act on the answer.
+
+   - `placeholders 0` - canon still holds the user's real details. **Do not run
+     `extract`, `match`, or anything else that prints canon's text.** Set it up instead,
+     in plain words - the user may not be technical:
+     1. `python3 $SCRIPT init-map` writes a blank `pii.txt`. Never open or write that
+        file yourself; the hook denies it.
+     2. Ask the user to open `pii.txt` in a text editor, type each detail after its `=`
+        exactly as it appears on their resume, add a line for every other employer,
+        school, or personal link, save, and reply.
+     3. `python3 $SCRIPT tokenize canon_resume.odt`. Each `FAIL` names a token and what
+        to do; relay it and run again once they reply. On `OK`, relay any `WARN` lines
+        and continue. This is the only step that ever modifies canon.
 
    The verdict is a document-type check. It is never a quality judgment and never a
    score - it does not enter the summary, and it is never described to the user as a
@@ -243,7 +263,7 @@ Set a stage with `python3 $SCRIPT stage <folder> <stage> [--note "..."]`.
      or a font such as Garamond). `check`, `budget`, and `fill` will **fail** rather
      than pass unmeasured, so ask whether to proceed unverified. Only on an explicit yes
      does this batch pass `--no-page-check` to those commands - never add the flag on
-     your own judgment, and never call a result that used it one page.
+     your own judgment, and never call a result that used it within canon's length.
 
 5. **Resolve `PREFIX`.** If `.output_name` exists, read it and use it as-is - do not ask
    again, and do not mention it. If it does not exist, **ask in plain prose and stop**:
@@ -378,8 +398,8 @@ straight to fill.
 
 **Otherwise, build the edit set** within budget: at most 3 bullet rewordings (each at
 canon's own bullet length), at most 1 bullet added and 1 dropped, Skills lines and
-header `.mid` may gain confirmed terms, projects may be reordered to lead with the most
-relevant. Prefer swapping an existing term for the posting's exact phrasing over adding
+header `.mid` and summary prose may gain confirmed terms, entries within a section may
+be reordered to lead with the most relevant. Prefer swapping an existing term for the posting's exact phrasing over adding
 text - highest value, lowest risk, no length change. If the user opted to fill page
 space, spend the bullet-add / reword-longer levers toward length - this doesn't raise
 the budget, it just gives a reason to use it that way.
@@ -395,13 +415,16 @@ rather than letting it wrap.
    `python3 $SCRIPT apply canon_resume.odt <folder>/edits.json -o <folder>/<PREFIX>_Resume_tokenized.odt`.
    Canon is never modified. Edit-set shape:
    ```json
-   {"replace": {"exp1.b2": "...", "proj1.head.mid": "| TypeScript, React, Node.js"},
+   {"replace": {"exp1.b2": "...", "proj1.head.mid": "| Python, SQL",
+                "professional-summary.p1": "..."},
     "delete": ["proj3.b2"],
     "insert_after": {"exp1.b1": ["new bullet"]},
-    "reorder_projects": ["Cattle Disease Detection", "Cryptography Demo", "Tetris Clone"]}
+    "reorder": {"PROJECTS": ["Inventory Tracker", "Survey Analysis", "Budget Planner"]}}
    ```
+   Ids are whatever `extract` printed. `reorder` takes a section heading as canon writes
+   it and every entry name under it, in the new order.
 2. `python3 $SCRIPT check canon_resume.odt <folder>/<PREFIX>_Resume_tokenized.odt`. Fails on voice
-   violations, >1 page, bottom-margin overflow, edits that add more lines than canon has
+   violations, more pages than canon, bottom-margin overflow, edits that add more lines than canon has
    spare, or a parse regression - all measured on the document as submitted. It also
    prints each changed bullet's line count before and after, and warns when one ends
    within a few characters of wrapping. On failure, revise the edit set and re-run.

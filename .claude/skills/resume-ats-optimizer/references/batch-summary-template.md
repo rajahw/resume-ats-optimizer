@@ -19,8 +19,8 @@ Tailored from `canon_resume.odt`. N applications: N filled, N skipped, N need yo
 
 | Application | Changes | Page |
 |-------------|---------|------|
-| [Role] at [Company] | 2 rewordings, Skills +Docker | 1 page, Npt to spare |
-| [Role] at [Company] | none needed | 1 page, Npt to spare |
+| [Role] at [Company] | 2 rewordings, Skills +Excel | canon's length, Npt to spare |
+| [Role] at [Company] | none needed | canon's length, Npt to spare |
 
 ## Needs you
 
@@ -51,7 +51,7 @@ Remaining gaps: genuinely absent requirements, after consultation. One line, or 
 
 | Term | Answer |
 |------|--------|
-| Kubernetes | yes - deployed services at [Company1] |
+| Epic charting | yes - charted assessments in Epic at [Company1] |
 | Go | no |
 
 ## Checks
@@ -60,9 +60,11 @@ Report only what `check` and `fill` actually measured. If page measurement was s
 under `--no-page-check`, say so here and drop the Page column's claims above.
 
 ---
-*The resume is already parse-safe: single column, no tables, standard headings,
-text-based PDF. Most applications are read by a human, and these edits are aimed at that
-reader. No prediction is made about any employer's applicant tracking system.*
+*The resume's text extracts cleanly and in order, which is what `check` measured.
+Recruiters surveyed mostly report that their systems rank applicants and screen on
+yes/no knockout questions rather than auto-rejecting on wording, so these edits are aimed
+at the person who reads the resume. No prediction is made about any employer's
+applicant tracking system.*
 ```
 
 An application overridden past a confirmed disqualifier goes under **Ready to submit**

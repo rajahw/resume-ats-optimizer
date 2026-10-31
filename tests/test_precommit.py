@@ -139,5 +139,51 @@ class TestAllowsCleanCommits(PreCommitCase):
         self.assertEqual(self.run_hook().returncode, 0)
 
 
+SCAN = os.path.join(helpers.HOOKS, "scan-history.py")
+
+
+class TestScanHistory(PreCommitCase):
+    def scan(self):
+        return subprocess.run([sys.executable, SCAN], cwd=self.repo,
+                              env=GIT_ENV, capture_output=True, text=True)
+
+    def commit(self, name, text, message="add"):
+        with open(self.path(name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        self.git("add", name)
+        self.git("commit", "-q", "-m", message)
+
+    def test_a_value_in_an_old_file_version_is_found_by_token_only(self):
+        self.write_map()
+        self.commit("notes.md", "Worked with Ada Lovelace on it.\n")
+        self.commit("notes.md", "Scrubbed.\n")
+        res = self.scan()
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("[Name]  notes.md", res.stdout)
+        for value in helpers.FAKE_VALUES.values():
+            self.assertNotIn(value, res.stdout + res.stderr)
+
+    def test_a_value_inside_a_committed_odt_is_found(self):
+        self.write_map()
+        filled = odt.fill_content(helpers.CONTENT, helpers.FAKE_VALUES)[0]
+        self.stage_resume(filled)
+        self.git("commit", "-q", "--no-verify", "-m", "oops")
+        self.assertIn("[Name]", self.scan().stdout)
+
+    def test_a_value_in_a_commit_message_is_found(self):
+        self.write_map()
+        self.commit("a.txt", "x\n", message="Tailored for Ada Lovelace")
+        self.assertIn("commit message", self.scan().stdout)
+
+    def test_clean_history_passes(self):
+        self.write_map()
+        self.commit("a.txt", "[Name] stays a token.\n")
+        self.assertEqual(self.scan().returncode, 0)
+
+    def test_no_map_is_its_own_exit_status(self):
+        self.commit("a.txt", "x\n")
+        self.assertEqual(self.scan().returncode, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,9 +8,10 @@ Read from SKILL.md, and acted on only when Phase 0 step 3 asked the document-typ
   anyway if asked to "just try". Leave the inbox and any split folders as they are.
 - **A resume in a layout this editor cannot parse.** Also stop, same way, but the
   message is different: the document is fine, the editor is the limitation. It edits
-  units under the headings `EDUCATION`, `SKILLS`, `EXPERIENCE`, and `PROJECTS`, and it
-  found the headings `shape` listed instead. Say what renaming would take, and that this
-  is their call to make - **never rewrite their resume's structure to fit the tool.**
+  bulleted entries under section headings, and needs bullets to be real list items (a
+  typed `•` or `-` at the start of a line is not one) and each entry's dates set off by
+  a tab. Say what `shape` found, what changing it would take, and that this is their
+  call - **never rewrite their resume's structure to fit the tool.**
 - **A resume in the expected layout after all.** `shape` is a heuristic and the user's
   answer wins, so continue. But if `shape` reported `0 units`, nothing is editable no
   matter what the document is: say so and stop rather than inventing an edit set

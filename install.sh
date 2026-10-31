@@ -10,7 +10,14 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 script="$root/.claude/skills/resume-ats-optimizer/scripts/odt_text.py"
 
-bash "$root/hooks/install.sh"
+# A ZIP download has no git repository, and needs no commit guard: nothing can
+# be committed. The guard keeping Claude out of pii.txt is wired through
+# .claude/settings.json and works either way.
+if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    bash "$root/hooks/install.sh"
+else
+    echo "hook:   not a git checkout (downloaded as a ZIP?) - commit guard not needed"
+fi
 
 # Probe each candidate rather than trusting PATH: on Windows `python3` is often
 # the Microsoft Store stub, which exists and then fails when run.
@@ -33,11 +40,18 @@ else
     "$py" "$script" doctor || true
 fi
 
+# postings/ is gitignored, so a fresh download has no inbox to paste into.
+if [ ! -f "$root/postings/inbox.txt" ]; then
+    mkdir -p "$root/postings"
+    : > "$root/postings/inbox.txt"
+    echo
+    echo "inbox:  created postings/inbox.txt - paste job postings there"
+fi
+
 echo
 if [ -f "$root/canon_resume.odt" ]; then
     echo "canon:  canon_resume.odt is present"
 else
-    echo "canon:  missing. Copy your resume in before the first run - it is"
-    echo "        gitignored and never leaves this machine:"
-    echo "            cp /path/to/your/resume.odt \"$root/canon_resume.odt\""
+    echo "canon:  not set up yet. Start Claude Code here, type /resume-ats-optimizer,"
+    echo "        and give it your resume file (.docx or .odt) when it asks."
 fi

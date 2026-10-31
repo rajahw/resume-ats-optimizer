@@ -1,344 +1,86 @@
 # resume-ats-optimizer
 
-A Claude Code skill that tailors a canonical résumé to a specific job description,
-making small edits in the author's own voice and verifying the result still parses
-cleanly and fits on one page.
+Tailor your resume to each job you apply for, in your own words, without making anything up.
 
-## Layout
+You give it your resume and a stack of job postings. For each posting, it finds the skills and terms the employer asks for that your resume doesn't mention, asks you about them once, and makes a few small edits so the resume uses the employer's own wording. Every edit is written to sound like the rest of your resume. You get one PDF per job, ready to submit, the same length as your original.
 
-```
-install.sh                one-shot setup for a fresh clone; idempotent
-.claude/skills/resume-ats-optimizer/
-  SKILL.md                workflow, hard rules, voice rules
-  scripts/odt_text.py     normalize / shape / extract / match / apply / check /
-                          fill / budget / doctor / split / name / stage / status
-  references/             batch summary template, read only at write time
-GLOSSARY.md               the domain terms: canon, posting, application, batch, ...
-docs/adr/                 decisions that would otherwise look odd
-hooks/                    pre-commit guard against committing real PII, plus the
-                          PreToolUse hook that keeps Claude out of pii.txt.
-                          Both are shell shims that locate a Python interpreter
-                          and block rather than pass if they cannot find one.
-.claude/settings.json     wires that hook up - committed, so it travels with the clone
-.gitattributes            forces LF on the scripts, so a Windows clone does not
-                          rewrite the shebangs to CRLF and break them
+## What it does and doesn't do
 
-canon_resume.odt          your resume - local only, gitignored, not shipped here
-pii.txt                   real values for the [Token]s - local only, gitignored,
-                          read by `fill` and by nothing else
-canon_resume_preview.pdf  LibreOffice render of canon, regenerable, gitignored
-migration/                edit sets that built your canon, if you keep any - gitignored
-postings/inbox.txt        where you paste postings - gitignored
-applications/             one folder per batch, one per application inside - gitignored
-experience.md             the Experience ledger - gitignored
-```
+- **Does** swap your wording for the posting's exact terms ("patient education" instead of "taught patients"), add a confirmed skill to your skills section, reorder entries so the most relevant one comes first, and lengthen or trim a bullet to fit.
+- **Does** ask before claiming anything. If a posting wants something your resume doesn't mention, you're asked whether you have it. Your answers are remembered, so each question is asked only once.
+- **Does** check every result: its text still comes out cleanly and in order when extracted from the PDF (the first step any resume parser takes), it runs no longer than your original, and nothing spills past the bottom margin.
+- **Doesn't** invent experience, add sections you don't have, or rewrite your resume in a generic style.
+- **Doesn't** score your resume or promise it will "beat the ATS". Nobody outside an employer can measure that, so it never claims to.
 
-**Canon is not in this repository.** It is your own document, so a fresh clone arrives
-without one and the skill aborts on its first run and asks you to add it. Save your
-résumé as `canon_resume.odt` in the repo root before invoking.
+## What you need
 
-Each application gets its own folder, `applications/<date>/<date>_<company>_<role>/`, holding
-the posting, the edit set, the tokenized `<First>_<Last>_Resume_tokenized.odt`, and the
-`<First>_<Last>_Resume.pdf` you submit. The folders are gitignored and are the
-archive of past applications — nothing to commit between them, and nothing overwritten
-(see [docs/adr/0001](docs/adr/0001-applications-as-gitignored-folders.md)). Back them up
-yourself if you want them kept.
+- A Claude plan that includes Claude Code: Pro, Max, Ultra, Team, Enterprise, or a Console (API) account. The free plan doesn't include it. The skill runs on the Claude Sonnet model.
+- Claude Code version 2.1.295 or newer (`claude --version` shows yours). Older versions can't make the privacy guard block when it fails to start.
+- A computer running Windows, macOS, or Linux. On Windows you also need **Git for Windows**: Claude Code itself works without it, but the privacy guard is a shell script that runs in the Git Bash it provides.
+- Your resume as a Word file (`.docx`), a Google Doc (download it as Word), or a LibreOffice file (`.odt`). It needs a simple layout: one column, section headings, and each job's dates on its title line (after a tab or a `|`). Descriptions can be bullets or short paragraphs. Content inside tables, text boxes, or two-column templates may not be editable; the tool's first check tells you what it found.
+- Three free programs: **Python 3**, **LibreOffice**, and **Poppler**. They convert and measure the resume.
 
-The name in those filenames is not baked into the skill. On its first run in a clone it
-asks what first and last name to file outputs under, saves the answer to `.output_name`,
-and never asks again — delete that file to change the name. It is gitignored, since it
-holds a real name and git history is permanent.
+## Set up (once)
 
-## Setup on a new machine
+1. **Install Claude Code.** Follow Anthropic's [setup guide](https://code.claude.com/docs/en/setup). On Windows, also install [Git for Windows](https://git-scm.com/downloads/win) (`winget install --id Git.Git --exact`).
 
-```bash
-bash install.sh
-cp /path/to/your/resume.odt canon_resume.odt   # gitignored, never committed
-```
+2. **Install the three programs.** Open a terminal (on Windows, use *Git Bash*) and run the lines for your system:
+   | System | Commands |
+   |---|---|
+   | macOS (needs [Homebrew](https://brew.sh)) | `brew install python poppler` then `brew install --cask libreoffice` |
+   | Windows | `winget install --id Python.Python.3.12 --exact` then `winget install --id TheDocumentFoundation.LibreOffice --exact` then `winget install --id oschwartz10612.Poppler --exact` |
+   | Ubuntu / Debian | `sudo apt install python3 libreoffice-writer poppler-utils` |
+   | Fedora | `sudo dnf install python3 libreoffice-writer poppler-utils` |
 
-**The skill needs no installation.** It lives at
-`.claude/skills/resume-ats-optimizer/`, which Claude Code loads for anyone working in
-this directory — cloning the repo is the whole install, on every platform. That also
-scopes it correctly: canon, the inbox, and `applications/` are all resolved relative to this
-directory, so the skill was only ever useful from inside it.
+    On Windows, close and reopen the terminal afterwards so it finds the new programs.
 
-What `install.sh` does is the part a clone deliberately cannot do for you: point git at
-this repo's hooks (`core.hooksPath`, no symlink), then report which Python and which
-renderers this machine has. Git never installs hooks on clone — it will not run code
-from a repository you have only downloaded — so this stays a one-time opt-in. Re-running
-is safe. To re-check the renderers alone:
+3. **Download this project.** On this page, click **Code → Download ZIP** and unzip it somewhere you'll find it, such as your Documents folder. (If you use git, cloning works too.)
 
-```bash
-python3 .claude/skills/resume-ats-optimizer/scripts/odt_text.py doctor canon_resume.odt
-```
+4. **Check it.** In the terminal, go to the unzipped folder and run the setup check:
 
-Requires `python3`. Rendering — the step that verifies one page, the bottom
-margin, and text recoverability — additionally needs LibreOffice and poppler's
-`pdftotext`, `pdfinfo`, and `pdffonts` (Fedora: `dnf install libreoffice-writer
-poppler-utils`; Debian/Ubuntu: `apt install libreoffice-writer poppler-utils`;
-macOS: `brew install --cask libreoffice && brew install poppler`).
+   ```bash
+   cd path/to/resume-ats-optimizer
+   bash install.sh
+   ```
 
-**Every font your résumé uses must be installed too.** LibreOffice silently
-substitutes a missing font with one of different width, so a résumé that fits in
-Garamond measures a page long in the fallback. `doctor canon_resume.odt` names any
-font the render had to substitute, and `check`, `budget`, and `fill` refuse to
-report a page measurement taken with the wrong font. Fonts that ship with Microsoft
-Office (Garamond, Calibri, Aptos) are not on Linux by default: copy the font files
-into `~/.local/share/fonts`, or set the résumé in a font this machine has.
+   It says what it found and how to install anything still missing.
 
-LibreOffice is found wherever this machine keeps it: `soffice` or `libreoffice`
-on `PATH` (any package install), then `/Applications/LibreOffice.app` on macOS
-and `C:\Program Files\LibreOffice` on Windows, then a Flatpak
-`org.libreoffice.LibreOffice`. Nothing is hardcoded to one platform.
+5. **Fonts.** The computer needs every font your resume uses, or page measurements come out wrong. The check names any that are missing. Fonts that come with Microsoft Office (Calibri, Aptos, Garamond) are the usual ones missing on Linux.
 
-Without those, the tool still runs — `match`, `extract`, `apply`, and the voice
-lint are pure Python — but `check`, `budget`, and `fill` **fail** rather than pass
-unmeasured. `--no-page-check` on `check` and `fill` accepts an unverified result
-explicitly, and the output still says SKIPPED.
+## Use it
 
-Page fit is measured on the résumé **as submitted**: when `pii.txt` exists, the
-placeholders are filled in memory, rendered from a staging copy under
-`~/.cache/odt_text`, and deleted, so short tokens cannot hide overflow that real
-values cause. `budget` prints spare lines and, per bullet, how many characters fit
-before its last line wraps; `check` fails an edit set that adds more lines than
-canon had spare.
+1. In the terminal, from the project folder, start Claude Code:
 
-## Platform support
+   ```bash
+   claude
+   ```
 
-Linux, macOS, and Windows. Nothing in the skill or the scripts is written against one
-platform, and there are no symlinks anywhere in the setup.
+   The first time, it asks you to trust the folder and its *hooks*. Say yes. The hooks
+   keep your personal details private (see below).
 
-**Windows needs Git Bash**, which ships with Git for Windows, so cloning this repo
-already implies having it. Claude Code runs hooks through Git Bash when it is present
-and falls back to PowerShell when it is not — and the guards here are `sh` scripts, so
-PowerShell cannot run them. If hooks do not fire, set
-`CLAUDE_CODE_GIT_BASH_PATH=C:\Program Files\Git\bin\bash.exe`; Claude Code only looks
-for `bash` on `PATH`, and Git's default install puts `Git\cmd` there rather than
-`Git\bin`.
+2. Type `/model sonnet`, then `/resume-ats-optimizer`. The skill is built and priced for Sonnet; it switches to Sonnet for its first step on its own, but Claude Code returns to your usual model after each reply, so setting it up front keeps the whole run on Sonnet.
 
-**`python3` is not assumed.** On Windows that name is often missing, or is the Microsoft
-Store stub that exists on `PATH` and then exits without running anything. Both guards
-are shell shims that try `python3`, `python`, and `py` in turn and *probe each one* by
-running it, so the stub is detected rather than trusted. `install.sh` reports which
-interpreter it settled on.
+3. **The first time only,** it asks for your resume. Give it the file's location (for example `~/Documents/resume.docx`). It then makes a file called `pii.txt` and asks you to open it in a text editor and type in your personal details: name, email, phone, employers, schools. Save it and tell Claude you're done. Claude swaps those details for placeholders like `[Name]` in its working copy. It never sees the real ones.
 
-**The guards fail closed.** A `PreToolUse` hook that exits non-zero for any reason other
-than 2 fails *open* — the tool call proceeds — so a missing interpreter would otherwise
-have silently disabled the one control keeping Claude out of `pii.txt`. When no working
-interpreter is found, `hooks/guard.sh` exits 2 and blocks the call, and the pre-commit
-shim blocks the commit. A guard that could not run is never mistaken for one that
-allowed.
+4. **Add job postings.** Open `postings/inbox.txt` and paste in each posting, or just its link, with a line of `=====` between them. Ten at a time is fine. Save, and tell Claude.
 
-Poppler (`pdftotext`, `pdfinfo`, `pdffonts`) is the piece Windows makes least
-convenient; without it you keep everything except the page and parse verification,
-and `check` fails unless you pass `--no-page-check` to accept that.
+5. **Answer its questions.** Claude reads every posting and sends one numbered list of questions for the whole batch, such as "Have you used Epic charting?" or "OK to change 'taught patients' to 'patient education'?". Answer briefly (`E1 yes, 2.W1 no`). Anything you leave blank resolves the safe way.
 
-## Use
+6. **Collect your resumes.** Each job gets a folder under `applications/<date>/` with a ready-to-submit PDF named after you, plus a short summary of what changed and why.
 
-```
-/resume-ats-optimizer  # after filling postings/inbox.txt, or with one posting pasted
-```
+If you close Claude partway through, run `/resume-ats-optimizer` again and it picks up
+where it stopped.
 
-The skill works in **batches**. Paste every posting you are applying to into
-`postings/inbox.txt`, with a line of `=====` between each, and invoke once. A single
-posting can be pasted straight into chat instead; several go through the file, because
-having Claude re-type each one costs tokens the file route does not.
+## Your privacy
 
-An entry can also be just the posting's URL. `split` fetches it and saves the posting
-itself, so no tokens are spent on it. Greenhouse and Lever boards work, as do careers
-pages that publish standard job-posting markup. LinkedIn works only when its public
-logged-out job page loads, and nothing is ever fetched while signed in. A URL that can't
-be read stays in the inbox, and you're asked to paste that posting's text in its place.
+- Your resume, job postings, personal details, and finished applications stay on your computer. None of them are part of this project or uploaded anywhere by it.
+- Your real name, email, phone number, employers, and schools live only in `pii.txt`. Claude is blocked from opening that file. A safety check runs before every action Claude takes, and it refuses any attempt to read the file or a finished PDF. The details are filled in by a program on your computer at the very end.
+- The text of your resume and the postings is sent to Claude to do the tailoring, the same as anything else you share with Claude.
 
-`split` also trims each posting's closing boilerplate (equal-opportunity and accommodation
-notices, benefits, company pitch) so Claude doesn't spend tokens reading it. Lines in that
-tail about citizenship, clearance, export control, sponsorship, or work authorization are
-kept, because they can rule an application out. The untrimmed posting is saved beside it
-as `posting.full.txt`; `split --no-trim` skips trimming.
+## License
 
-1. **Analyze.** Each posting gets its own folder and a proposed edit set. No questions yet.
-2. **Consult.** One numbered list for the whole batch: experience questions asked once
-   across all postings, then a block per posting. Answer tersely (`E1 y, 2.R1 n`).
-   Blanks resolve safely: rewordings accepted, bullets kept, unanswered experience
-   treated as no. Disqualifiers and duplicate applications must be answered.
-3. **Apply.** Every application is tailored, checked, and filled without pausing.
-   Anything it cannot fix on its own lands on a "needs you" list instead of stopping
-   the batch.
-4. **Wrap up.** One `applications/<date>/<date>_batch-summary.md` and a short chat reply listing
-   what is ready to submit.
+[PolyForm Noncommercial 1.0.0](LICENSE.md). Free for personal use, including job hunting, and for education, research, and nonprofit organizations. You can change it and share your changes under the same terms. **Commercial use** (for example a recruiting firm, career coaching service, or resume product) **needs written permission**: open an issue on this repository to ask. This makes the project *source-available* rather than open source.
 
-It asks about gaps **before** writing anything, because a keyword missing from the
-résumé usually means it was never written down, not that the experience is absent.
-Your answers are kept in `experience.md`, the **Experience ledger**, so a question
-answered once is never asked again — edit the file to change an answer. It stores
-`[Token]`s, never real employer names.
+## For developers
 
-Every application's stage is saved in its folder, so an interrupted batch picks up where
-it stopped the next time you invoke the skill.
-
-The script alone is usable without Claude:
-
-```bash
-SCRIPT=.claude/skills/resume-ats-optimizer/scripts/odt_text.py
-
-python3 $SCRIPT doctor
-python3 $SCRIPT shape   canon_resume.odt
-python3 $SCRIPT split                          # postings/inbox.txt -> applications/ (URLs fetched)
-python3 $SCRIPT name    applications/<folder> "Acme" "Backend Engineer"
-python3 $SCRIPT status                         # applications still in progress
-python3 $SCRIPT match   canon_resume.odt applications/<folder>/posting.txt
-python3 $SCRIPT extract canon_resume.odt
-python3 $SCRIPT apply   canon_resume.odt edits.json -o out.odt
-python3 $SCRIPT check   canon_resume.odt out.odt
-python3 $SCRIPT fill    out_tokenized.odt -o out_Resume.pdf
-```
-
-## Placeholders
-
-Optional, and only relevant if you want your tailored outputs to be committable. The
-author's canon replaces every piece of PII with a `[Token]`, using this suggested
-schema as a starting point — `[Name]` `[City]` `[State]` `[Email]` `[Phone]`
-`[Website]` `[University]` `[UniCity]` `[UniState]` `[Company1]` `[Company2]` — which
-the skill treats as literal and never fills, so the tailored `.odt` comes out redacted
-too. It's a recommendation, not a requirement: nothing is hardcoded against it, so a
-canon can use fewer tokens, extra ones, or one this list doesn't anticipate (a
-`[Company1Verbose]` for a header that spells out an employer's full name, say) —
-whatever bracketed tokens actually appear in the document are what `pii.txt` needs to
-map.
-
-A canon you drop in straight from your own résumé has real details in it instead. That
-is fine and the skill handles it — canon itself is gitignored either way — but the
-tailored output then carries your PII, so keep it out of git.
-
-### Filling them
-
-Write the real values into `pii.txt` in the repo root, one mapping per line:
-
-```
-[Name] = Ada Lovelace
-[City] = Springfield
-[State] = IL
-[Email] = ada@example.com
-[Phone] = 555-0100
-[Website] = example.com/ada
-[University] = Example State University
-[UniCity] = Springfield
-[UniState] = IL
-[Company1] = Initech
-[Company2] = Globex
-```
-
-Blank lines and `#` comments are skipped, the value is everything after the first `=`,
-and an apostrophe in a value is normalized to whichever form canon itself uses, so a name
-typed in a plain-text editor does not end up the odd one out. The
-token names are not fixed — whatever the file declares is what gets replaced, so a canon
-with different tokens just needs different keys. Every token in the document must have a
-mapping or the fill fails. Tokens inside a hyperlink target count too, so `mailto:[Email]`
-and `https://[Website]` reuse the values above, while a link that needs a whole URL of its
-own (a project repo, say) gets its own token, e.g. `[CattleRepo] = https://github.com/...`.
-
-A token is a bracketed run of letters, digits, underscores, and hyphens — `[Name]`,
-`[Work_Phone]`, and `[Company-1]` all count. Anything else between brackets is ordinary
-text and is left alone.
-
-Then:
-
-```bash
-python3 $SCRIPT fill Ada_Lovelace_Resume_tokenized.odt -o Ada_Lovelace_Resume.pdf
-```
-
-The filled copy is what you submit. The tokenized `<PREFIX>_Resume_tokenized.odt` stays untouched
-and is the one that can be committed. `fill` refuses to write anywhere but a `*_Resume.pdf`/`.odt`
-(or legacy `*_filled.*`) path or `private/`, re-renders the result to confirm the real values did not push it onto
-a second page (a real name is longer than `[Name]`), and reports any token left unmapped.
-It prints token names and counts only — never a value — so its output is safe to paste
-anywhere.
-
-`pii.txt` and `*_Resume.*` are both gitignored, and the pre-commit hook blocks either one
-from being staged. Git history is permanent; a PII leak cannot be undone by a later
-delete.
-
-### Claude never sees any of it
-
-`pii.txt` is off limits to Claude, and that is enforced rather than merely asked for.
-`hooks/block-pii-access.py` runs as a `PreToolUse` hook on every tool call — launched by
-`hooks/guard.sh`, which finds a working Python or blocks the call outright — and denies:
-
-- any read, write, glob, or shell command that names a `pii*` file — including wildcards
-  that would sweep one up (`cat *.txt`) and indirection (`python3 -c "open('pii.txt')"`);
-- reading back a `*_Resume.*`, `*_filled.*`, or `private/**` file, so Claude can produce a filled résumé
-  but never inspect one.
-
-Running `fill` stays allowed because the command does not name the map — the script opens
-it itself. Documentation can discuss `pii.txt` freely, since the rule tests file paths and
-commands, not file contents.
-
-The hook is wired in `.claude/settings.json`, which is committed on purpose: it is a
-security control, so it should travel with the clone rather than live in someone's local
-config. **Claude Code asks you to trust project hooks the first time it loads them** —
-approve it once, or run `/hooks` to review what it does.
-
-The guard is a guardrail, not a sandbox. It matches filenames in commands, so it stops
-the direct and the careless route but cannot see through a directory-wide sweep that
-never names the file, shell indirection that builds the name at runtime, or a content
-search whose *pattern* is the secret. Closing those needs an OS-level boundary rather
-than a longer regex; `tests/test_guard.py` pins the known gaps so they are not mistaken
-for coverage.
-
-## Tests
-
-```bash
-python3 -m unittest discover tests
-```
-
-Standard library only — no pytest, matching the rest of the tool. Every fixture is
-synthetic: the suite builds its own `.odt` documents and its own all-fake identity maps,
-and never reads your canon, your `pii.txt`, or any filled output. That is deliberate, so
-an agent forbidden from touching those files can still run the suite.
-
-## Design notes
-
-**Formatting is preserved by construction.** Edits are raw-string surgery on
-`content.xml`; every other zip entry, including the 66KB `styles.xml` that holds all
-real formatting, is copied byte-for-byte. `check` asserts that.
-
-**Right-alignment is real.** Canon originally faked flush-right dates with hardcoded
-tab and space runs, landing ~2.8pt short of the margin. They now use a genuine right tab
-stop at the 7.5in text width, so header text can change length without breaking.
-
-**Your canon is the style guide.** The tool has no house voice and does not try to
-improve your writing: `check` reads canon's own prose and holds edits to *that* -
-whichever apostrophe and quote forms it settled on, the characters it actually uses, the
-length its bullets run. A word already in your résumé is in-voice by definition, even one
-on the boilerplate list. The only opinions that outrank yours are the ones that affect
-parsing: exact terminology from the posting, plain characters, and no invented structure.
-
-**Bullets stay verbatim where they can.** Splitting a multi-clause paragraph into bullets
-is mechanical and should stay that way: when the author's canon was built this way, the
-only wording changes in the whole conversion were two pronoun repairs (`This` → `The
-suite`, `It` → `The system`) where a split sentence had lost its antecedent. If you
-convert a résumé into this shape, hold to that bar - `check` lints against canon, but it
-cannot tell you that a rewrite drifted.
-
-**`shape` asks whether a document is a résumé, never whether it is a good one.** Since
-canon is now whatever file you dropped in, the skill checks before it starts: does the
-document carry the four section headings the editor works on, and does anything under
-them parse as an editable unit? It reports the signals and stops there. It cannot
-identify what a document is, so an `unrecognized` verdict becomes a question during
-consultation — a résumé with different headings and a cover letter both fail the check
-and need completely different answers. Confirm it is not a résumé and the run aborts
-with no output at all.
-
-**No scoring.** The tool never emits a match score, coverage percentage, or rating.
-Employer ATS platforms are proprietary and cannot be tested against, so any such number
-would be invented. `match` returns categorized terms — near-miss and missing — and
-nothing else. The widely repeated "75% of résumés are rejected by ATS" claim traces to a
-2012 sales pitch by a vendor that folded in 2013; recruiters overwhelmingly report their
-systems do not auto-reject.
-
-What *is* verifiable is checked: `check` runs `pdftotext` — the same text-extraction step
-a parser performs — and asserts every section is recoverable in reading order, the page
-count is 1, content stays inside the bottom margin, and no punctuation, character, or
-boilerplate phrase foreign to your own résumé crept into the bullets that changed. On a machine
-without LibreOffice, poppler, or the résumé's own fonts it fails instead of passing,
-so an `OK` never stands in for a measurement that did not happen.
+How it works, the command-line tool, the privacy guard's design and limits, and the tests: [docs/DESIGN.md](docs/DESIGN.md). Where every external fact and dependency was verified: [docs/SOURCES.md](docs/SOURCES.md). Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Publishing a fork? Run `python3 hooks/scan-history.py` first. It checks every past commit for your real details.

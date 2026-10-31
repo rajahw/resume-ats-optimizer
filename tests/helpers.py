@@ -127,6 +127,50 @@ CONTENT = (
     '</office:document-content>'
 )
 
+# A resume from outside software: a summary paragraph, headings the original
+# four do not include (title case and all caps), two employers, a licenses list
+# with no entry header, a skills line without a label, and no PROJECTS at all.
+NURSE_BODY = (
+    '<office:body><office:text>'
+    '<text:p text:style-name="P1">[Name]</text:p>'
+    '<text:p text:style-name="P2">[City], [State] | [Email] | [Phone]</text:p>'
+    '<text:p text:style-name="P3">Professional Summary</text:p>'
+    '<text:p text:style-name="P5">Registered nurse with six years of acute care '
+    'experience.</text:p>'
+    '<text:p text:style-name="P3">Professional Experience</text:p>'
+    '<text:p text:style-name="P5">[Company1]<text:tab/>2020 - Present</text:p>'
+    '<text:p text:style-name="P8">Staff Nurse, Medical-Surgical Unit</text:p>'
+    '<text:list text:style-name="L1">'
+    '<text:list-item><text:p text:style-name="P13">Managed care for up to six '
+    'patients per shift.</text:p></text:list-item>'
+    '<text:list-item><text:p text:style-name="P13">Charted assessments in Epic.'
+    '</text:p></text:list-item>'
+    '</text:list>'
+    '<text:p text:style-name="P5">[Company2]<text:tab/>2018 - 2020</text:p>'
+    '<text:list text:style-name="L1">'
+    '<text:list-item><text:p text:style-name="P13">Precepted four new graduate '
+    'nurses.</text:p></text:list-item>'
+    '</text:list>'
+    '<text:p text:style-name="P3">LICENSES &amp; CERTIFICATIONS</text:p>'
+    '<text:list text:style-name="L1">'
+    '<text:list-item><text:p text:style-name="P13">Registered Nurse, [State] '
+    'Board of Nursing</text:p></text:list-item>'
+    '<text:list-item><text:p text:style-name="P13">BLS and ACLS, American Heart '
+    'Association</text:p></text:list-item>'
+    '</text:list>'
+    '<text:p text:style-name="P3">Education</text:p>'
+    '<text:p text:style-name="P5">[University]<text:tab/>2018</text:p>'
+    '<text:p text:style-name="P3">Skills</text:p>'
+    '<text:p text:style-name="P5">Patient education, wound care, IV therapy</text:p>'
+    '</office:text></office:body>'
+)
+
+NURSE_CONTENT = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<office:document-content ' + NS + '>' + AUTO_STYLES + NURSE_BODY +
+    '</office:document-content>'
+)
+
 # The token set BODY actually uses, including the two that appear only in hrefs.
 TOKENS = [
     "[Name]", "[City]", "[State]", "[Email]", "[Phone]", "[Website]",

@@ -43,8 +43,11 @@ class TempCase(unittest.TestCase):
         return dict(os.environ, ODT_TEXT_CACHE=self.path("cache"))
 
     def run_cli(self, *args):
+        # cwd is the tmp dir, so a default path (canon_resume.odt, pii.txt,
+        # applications/) never reaches the real repo's files.
         return subprocess.run([sys.executable, SCRIPT] + list(args),
-                              capture_output=True, text=True, env=self.env())
+                              capture_output=True, text=True, env=self.env(),
+                              cwd=self.tmp)
 
     def run_stubbed(self, patch, *args):
         """Run the CLI with one line of monkeypatching applied first."""
@@ -54,7 +57,7 @@ class TempCase(unittest.TestCase):
                      "sys.argv = ['odt_text'] + %r\nodt_text.main()\n"
                      % (helpers.SCRIPTS, patch, list(args)))
         return subprocess.run([sys.executable, stub], capture_output=True, text=True,
-                              env=self.env())
+                              env=self.env(), cwd=self.tmp)
 
 
 class TestNormalize(TempCase):
@@ -489,7 +492,7 @@ class TestCanonGeometryCache(TempCase):
         self.addCleanup(setattr, m, "RENDER_CACHE", self.original)
 
     def report(self, subs=()):
-        return {"n_lines": 40, "spare": 2, "geo": {"exp1.b1": (2, 10)},
+        return {"pages": 1, "n_lines": 40, "spare": 2, "geo": {"exp1.b1": (2, 10)},
                 "substitutes": list(subs), "lines": [{"text": "Ada Lovelace"}]}
 
     def test_round_trip_keeps_geometry_and_drops_text(self):
@@ -534,6 +537,249 @@ class TestCanonGeometryCache(TempCase):
             rendered = fh.read().split()
         self.assertEqual(rendered.count(src), 1, rendered)
         self.assertEqual(rendered.count(out), 2, rendered)
+
+
+class TestAnyLayout(TempCase):
+    def units(self):
+        return {u["id"]: u for u in m.extract_units(helpers.NURSE_CONTENT)}
+
+    def test_headings_are_canons_own(self):
+        self.assertEqual(m.section_headings(helpers.NURSE_CONTENT),
+                         ["Professional Summary", "Professional Experience",
+                          "LICENSES & CERTIFICATIONS", "Education", "Skills"])
+
+    def test_ids_follow_each_section(self):
+        ids = list(self.units())
+        self.assertEqual(ids, [
+            "professional-summary.p1",
+            "professional-experience1.head", "professional-experience1.b1",
+            "professional-experience1.b2",
+            "professional-experience2.head", "professional-experience2.b1",
+            "licenses-certifications.b1", "licenses-certifications.b2",
+            "edu.head1", "skills.p1"])
+
+    def test_bullets_never_leak_into_the_previous_section(self):
+        u = self.units()["licenses-certifications.b1"]
+        self.assertEqual(u["section"], "LICENSES & CERTIFICATIONS")
+        self.assertEqual(u["parent"], "")
+
+    def test_the_original_layout_keeps_its_ids(self):
+        ids = [u["id"] for u in m.extract_units(helpers.CONTENT)]
+        self.assertEqual(ids, ["edu.head1", "skills.languages", "exp1.head",
+                               "exp1.b1", "exp1.b2", "proj1.head", "proj1.b1"])
+
+    def test_an_all_caps_name_is_not_a_heading(self):
+        content = helpers.NURSE_CONTENT.replace(">[Name]<", ">ADA LOVELACE<")
+        self.assertNotIn("ADA LOVELACE", m.section_headings(content))
+
+    def test_shape_reads_it_as_a_resume(self):
+        sig = m.shape_signals(helpers.NURSE_CONTENT)
+        self.assertEqual(sig["verdict"], "resume", sig)
+        self.assertGreater(sig["tokens"], 0)
+
+    def test_summary_prose_can_be_replaced(self):
+        import json
+        src = self.odt(content=helpers.NURSE_CONTENT)
+        epath = self.path("edits.json")
+        new = "Registered nurse with six years of acute and telemetry care experience."
+        with open(epath, "w", encoding="utf-8") as fh:
+            json.dump({"replace": {"professional-summary.p1": new}}, fh)
+        out = self.path("out.odt")
+        res = self.run_cli("apply", src, epath, "-o", out)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        got = {u["id"]: u for u in m.extract_units(m.read_content(out))}
+        self.assertEqual(got["professional-summary.p1"]["text"], new)
+
+    def test_entries_reorder_within_any_section(self):
+        import json
+        src = self.odt(content=helpers.NURSE_CONTENT)
+        epath = self.path("edits.json")
+        with open(epath, "w", encoding="utf-8") as fh:
+            json.dump({"reorder": {"Professional Experience": ["[Company2]", "[Company1]"]}}, fh)
+        out = self.path("out.odt")
+        res = self.run_cli("apply", src, epath, "-o", out)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        heads = [u["left"] for u in m.extract_units(m.read_content(out))
+                 if u["kind"] == "header" and u["section"] == "Professional Experience"]
+        self.assertEqual(heads, ["[Company2]", "[Company1]"])
+        # The section after it is untouched.
+        self.assertIn("licenses-certifications.b2",
+                      [u["id"] for u in m.extract_units(m.read_content(out))])
+
+    def test_check_parses_canons_own_headings(self):
+        src = self.odt(content=helpers.NURSE_CONTENT)
+        flat = ("Professional Summary Professional Experience LICENSES & CERTIFICATIONS "
+                "Education Skills")
+        layout = fake_layout()
+        layout["flat"] = flat + " " + " ".join(
+            u["text"] for u in m.extract_units(helpers.NURSE_CONTENT) if u["kind"] == "bullet")
+        res = self.run_stubbed("odt_text.render_layout = lambda p, **k: %r" % layout,
+                               "check", src, src, "--map", self.path("none.txt"))
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertNotIn("parse check", res.stdout)
+
+
+class TestWordStyleLayout(unittest.TestCase):
+    """How resumes typed in Word or Google Docs tend to be laid out: dates after a
+    pipe with no tab, descriptions as paragraphs, manual line breaks, stray tabs."""
+
+    BODY = (
+        '<office:body><office:text>'
+        '<text:p text:style-name="P1">[Name]</text:p>'
+        '<text:p text:style-name="P3">EXPERIENCE</text:p>'
+        '<text:p text:style-name="P5">[Company1], [City]<text:line-break/>'
+        'Program Manager | January 2024 - Present</text:p>'
+        '<text:p text:style-name="P5">Designed and delivered training for forty staff '
+        'across three sites.</text:p>'
+        '<text:p text:style-name="P5">Led planning<text:tab/>and execution of the annual '
+        'conference for five hundred attendees and partners across the region.</text:p>'
+        '<text:list text:style-name="L1">'
+        '<text:list-item><text:p text:style-name="P13"/></text:list-item>'
+        '<text:list-item><text:p text:style-name="P13">Built the program.</text:p>'
+        '</text:list-item></text:list>'
+        '<text:p text:style-name="P5">[University1] Adjunct Professor | Fall 2016 - Spring 2019'
+        '</text:p>'
+        '<text:p text:style-name="P8">Culinary Arts Department</text:p>'
+        '<text:p text:style-name="P3">SKILLS</text:p>'
+        '<text:p text:style-name="P5">Facilitation: circles, mediation</text:p>'
+        '</office:text></office:body>'
+    )
+    CONTENT = ('<?xml version="1.0" encoding="UTF-8"?><office:document-content '
+               + helpers.NS + '>' + helpers.AUTO_STYLES + BODY + '</office:document-content>')
+
+    def units(self):
+        return {u["id"]: u for u in m.extract_units(self.CONTENT)}
+
+    def test_a_date_after_a_pipe_makes_a_header(self):
+        u = self.units()["exp1.head"]
+        self.assertEqual((u["left"], u["right"]),
+                         ("[Company1], [City] Program Manager", "January 2024 - Present"))
+
+    def test_a_season_range_is_a_date(self):
+        self.assertEqual(self.units()["exp2.head"]["right"], "Fall 2016 - Spring 2019")
+
+    def test_line_breaks_separate_words(self):
+        self.assertIn("[City] Program", self.units()["exp1.head"]["left"])
+
+    def test_paragraph_descriptions_are_editable_and_titles_are_not(self):
+        ids = list(self.units())
+        self.assertIn("exp1.p1", ids)
+        self.assertIn("exp1.p2", ids)  # a stray tab does not make it a header
+        self.assertFalse(any("Department" in (u.get("text") or "")
+                             for u in self.units().values()))
+
+    def test_an_empty_list_item_is_not_a_bullet(self):
+        self.assertEqual(self.units()["exp1.b1"]["text"], "Built the program.")
+
+    def test_spacing_around_a_replaced_paragraph_survives(self):
+        raw = ('<text:tab/><text:tab/><text:line-break/> Old text here.'
+               '<text:line-break/> <text:tab/>')
+        self.assertEqual(m.split_edges(raw),
+                         ('<text:tab/><text:tab/><text:line-break/> ', 'Old text here.',
+                          '<text:line-break/> <text:tab/>'))
+        self.assertEqual(m.split_edges("Plain bullet."), ("", "Plain bullet.", ""))
+
+
+class TestMultiLineSkills(TempCase):
+    SKILLS = ('<text:p text:style-name="P5"><text:span text:style-name="T1">Languages: '
+              '</text:span>Python, C++, SQL<text:tab/><text:tab/><text:line-break/> '
+              '<text:span text:style-name="T1">Tools &amp; Platforms: </text:span>'
+              'Git, Docker<text:line-break/></text:p>')
+
+    def content(self):
+        return helpers.CONTENT.replace(
+            '<text:p text:style-name="P5">Languages: Python, C++, SQL</text:p>', self.SKILLS)
+
+    def test_each_line_is_its_own_unit(self):
+        units = {u["id"]: u for u in m.extract_units(self.content())}
+        self.assertEqual(units["skills.languages"]["text"], "Python, C++, SQL")
+        self.assertEqual(units["skills.toolsplatforms"]["text"], "Git, Docker")
+
+    def test_editing_one_line_keeps_the_others_and_the_breaks(self):
+        import json
+        src = self.odt(content=self.content())
+        epath = self.path("edits.json")
+        with open(epath, "w", encoding="utf-8") as fh:
+            json.dump({"replace": {"skills.toolsplatforms": "Git, Docker, Jenkins"}}, fh)
+        out = self.path("out.odt")
+        res = self.run_cli("apply", src, epath, "-o", out)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        got = m.read_content(out)
+        units = {u["id"]: u for u in m.extract_units(got)}
+        self.assertEqual(units["skills.languages"]["text"], "Python, C++, SQL")
+        self.assertEqual(units["skills.toolsplatforms"]["text"], "Git, Docker, Jenkins")
+        self.assertEqual(got.count("<text:line-break/>"), self.SKILLS.count("<text:line-break/>"))
+        ET.fromstring(got)
+
+    def test_check_warns_when_most_of_a_unit_disappears(self):
+        import json
+        src = self.odt(content=self.content())
+        epath = self.path("edits.json")
+        with open(epath, "w", encoding="utf-8") as fh:
+            json.dump({"replace": {"skills.languages": "Python"}}, fh)
+        out = self.path("out.odt")
+        self.run_cli("apply", src, epath, "-o", out)
+        res = self.run_stubbed("odt_text.render_layout = lambda p, **k: None", "check",
+                               src, out, "--map", self.path("none.txt"), "--no-page-check")
+        self.assertIn("skills.languages lost most of its text", res.stdout)
+
+
+class TestPageLimitIsCanons(TempCase):
+    def _pair(self):
+        import json
+        src = self.odt()
+        epath = self.path("edits.json")
+        with open(epath, "w", encoding="utf-8") as fh:
+            json.dump({"replace": {"exp1.b1": "Plain bullet text."}}, fh)
+        out = self.path("out.odt")
+        self.run_cli("apply", src, epath, "-o", out)
+        return src, out
+
+    def run_check(self, out_pages, canon_pages):
+        src, out = self._pair()
+        two = [line("x", 54, 60, 100, page=p) for p in range(1, canon_pages + 1)]
+        patch = ("_n = iter([%r, %r])\nodt_text.render_layout = lambda p, **k: next(_n)"
+                 % (fake_layout(pages=out_pages, lines=two),
+                    fake_layout(pages=canon_pages, lines=two)))
+        return self.run_stubbed(patch, "check", src, out, "--map", self.path("none.txt"))
+
+    def test_a_two_page_canon_allows_two_pages(self):
+        res = self.run_check(2, 2)
+        self.assertNotIn("pages; canon is", res.stdout)
+
+    def test_running_past_canons_length_fails(self):
+        res = self.run_check(3, 2)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("resume is 3 pages; canon is 2", res.stdout)
+
+    def test_last_is_measured_on_the_final_page(self):
+        lines = [line("a", 54, 60, 700, page=1), line("b", 54, 60, 100, page=2)]
+        bbox = "".join(
+            '<page>%s</page>' % "".join(
+                '<line xMin="%s" yMin="%s" xMax="%s" yMax="%s"><word>%s</word></line>'
+                % (l["xMin"], l["yMin"], l["xMax"], l["yMax"], l["text"])
+                for l in lines if l["page"] == p) for p in (1, 2))
+        orig = (m.to_pdf, m.substituted_fonts, subprocess.run)
+        pdf_dir = tempfile.mkdtemp(dir=self.tmp)
+        pdf = os.path.join(pdf_dir, "x.pdf")
+        open(pdf, "w").close()
+
+        class Out:
+            def __init__(self, s): self.stdout = s
+
+        def fake_run(argv, **kw):
+            if argv[0] == "pdfinfo":
+                return Out("Pages:          2\n")
+            if "-bbox-layout" in argv:
+                return Out(bbox)
+            return Out("")
+        m.to_pdf, m.substituted_fonts = (lambda p: pdf), (lambda o, p: [])
+        m.subprocess.run = fake_run
+        try:
+            layout = m.render_layout(self.odt())
+        finally:
+            m.to_pdf, m.substituted_fonts, m.subprocess.run = orig
+        self.assertEqual(layout["last"], 112.0)
 
 
 class TestShape(TempCase):
@@ -805,6 +1051,95 @@ class TestBatch(TempCase):
         self.split("A\n")
         res = self.run_cli("stage", m.application_folders(self.apps)[0], "done")
         self.assertNotEqual(res.returncode, 0)
+
+
+class TestOnboarding(TempCase):
+    """A new user's resume holds real details; tokenize puts tokens in their place."""
+
+    VALUES = {"[Name]": "Grace Hopper", "[Email]": "grace@example.com",
+              "[Phone]": "555-0199", "[City]": "Arlington", "[State]": "VA",
+              "[Company1]": "Remington Rand", "[University]": "Vassar College",
+              "[UniCity]": "Poughkeepsie", "[UniState]": "NY",
+              "[Website]": "example.org/grace", "[ProjectRepo]": "https://example.org/repo"}
+
+    def real_resume(self, content=helpers.CONTENT):
+        return self.odt(content=m.fill_content(content, self.VALUES)[0])
+
+    def tokenize(self, src, values=None):
+        mp = helpers.write_map(self.path("map.txt"), values or self.VALUES)
+        return self.run_cli("tokenize", src, "--map", mp)
+
+    def test_tokenize_then_fill_round_trips(self):
+        src = self.real_resume()
+        res = self.tokenize(src)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        tokenized = m.read_content(src)
+        self.assertEqual(sorted(m.body_tokens(tokenized[tokenized.find("<office:body>"):])),
+                         sorted(helpers.TOKENS))
+        refilled = m.fill_content(tokenized, self.VALUES)[0]
+        self.assertEqual(m.strip_tags(refilled),
+                         m.strip_tags(m.fill_content(helpers.CONTENT, self.VALUES)[0]))
+
+    def test_output_never_prints_a_value(self):
+        res = self.tokenize(self.real_resume())
+        for v in self.VALUES.values():
+            self.assertNotIn(v, res.stdout + res.stderr)
+
+    def test_the_original_is_kept_out_of_reach(self):
+        self.tokenize(self.real_resume())
+        backup = os.path.join(self.tmp, "private", "canon.orig.odt")
+        self.assertTrue(os.path.exists(backup))
+        self.assertIn("Grace Hopper", m.read_content(backup))
+
+    def test_a_value_split_by_formatting_is_reported_by_token(self):
+        content = helpers.CONTENT.replace(
+            '<text:p text:style-name="P1">[Name]</text:p>',
+            '<text:p text:style-name="P1">Grace <text:span text:style-name="T1">'
+            'Hopper</text:span></text:p>')
+        res = self.tokenize(self.real_resume(content))
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("[Name] is still in the document", res.stdout)
+
+    def test_an_unlisted_email_is_flagged(self):
+        values = dict(self.VALUES)
+        del values["[Email]"]
+        res = self.tokenize(self.real_resume(), values)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("an email address is still in the document", res.stdout)
+
+    def test_a_value_inside_a_word_is_left_alone(self):
+        content = helpers.CONTENT.replace("Plain bullet", "Plain VAriety bullet")
+        self.tokenize(self.real_resume(content))
+        self.assertIn("VAriety", m.read_content(self.path("canon.odt")))
+
+    def test_init_map_writes_a_blank_template_once(self):
+        mp = self.path("map.txt")
+        self.assertEqual(self.run_cli("init-map", "--map", mp).returncode, 0)
+        self.assertNotEqual(self.run_cli("init-map", "--map", mp).returncode, 0)
+        with open(mp, "a", encoding="utf-8") as fh:
+            fh.write("[Name] = Grace Hopper\n")
+        self.assertEqual(m.read_pii_map(mp), {"[Name]": "Grace Hopper"})
+
+    def test_import_refuses_to_overwrite_canon(self):
+        src = self.odt()
+        self.odt(name="canon_resume.odt")
+        res = self.run_cli("import", src)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("already exists", res.stderr)
+
+    def test_import_rejects_unknown_types(self):
+        res = self.run_cli("import", self.path("resume.pages"))
+        self.assertIn("File > Download", res.stderr)
+
+    @unittest.skipUnless(m.find_soffice(), "LibreOffice not installed")
+    def test_import_reads_a_word_file(self):
+        docx = m.soffice_convert(self.odt(), "docx")
+        self.assertIsNotNone(docx)
+        self.addCleanup(shutil.rmtree, os.path.dirname(docx), True)
+        res = self.run_cli("import", docx)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("VERDICT: resume", res.stdout)
+        self.assertTrue(os.path.exists(self.path("canon_resume.odt")))
 
 
 if __name__ == "__main__":

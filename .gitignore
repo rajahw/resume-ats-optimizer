@@ -41,6 +41,12 @@ canon_resume.odt
 canon_resume*.odt
 canon_resume_preview.pdf
 
+# A resume brought in from Word or Google Docs, before `import` converts it.
+# Real details until tokenized, so it never belongs in git.
+*.docx
+*.doc
+*.rtf
+
 # Don't commit generated resume and report
 *_Resume.odt
 *_Resume.pdf

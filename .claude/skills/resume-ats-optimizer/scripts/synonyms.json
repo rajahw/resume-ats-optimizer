@@ -1,0 +1,242 @@
+{
+  "acls": [
+    "advanced cardiovascular life support"
+  ],
+  "agile": [
+    "scrum",
+    "stand-ups",
+    "sprint"
+  ],
+  "automated": [
+    "automation"
+  ],
+  "automation": [
+    "automated",
+    "automatic"
+  ],
+  "bls": [
+    "basic life support",
+    "cpr"
+  ],
+  "bookkeeping": [
+    "accounts payable",
+    "accounts receivable",
+    "quickbooks"
+  ],
+  "c++": [
+    "cpp"
+  ],
+  "ci/cd": [
+    "continuous integration",
+    "continuous delivery",
+    "continuous deployment",
+    "pipelines"
+  ],
+  "classroom management": [
+    "classroom"
+  ],
+  "cloud": [
+    "azure"
+  ],
+  "continuous integration": [
+    "ci/cd",
+    "pipelines"
+  ],
+  "cpr": [
+    "bls",
+    "basic life support"
+  ],
+  "crm": [
+    "salesforce",
+    "hubspot",
+    "customer relationship management"
+  ],
+  "cross-functional": [
+    "cross functional",
+    "interdepartmental"
+  ],
+  "curriculum development": [
+    "curriculum",
+    "lesson plans"
+  ],
+  "customer service": [
+    "client service",
+    "customer support",
+    "guest service"
+  ],
+  "customer support": [
+    "customer service",
+    "client support"
+  ],
+  "data analysis": [
+    "analyzed data",
+    "data analytics"
+  ],
+  "database": [
+    "sql",
+    "sql server"
+  ],
+  "devops": [
+    "azure devops",
+    "ci/cd"
+  ],
+  "ehr": [
+    "electronic health records",
+    "emr",
+    "epic",
+    "cerner"
+  ],
+  "electronic health records": [
+    "ehr",
+    "emr",
+    "epic"
+  ],
+  "emr": [
+    "electronic medical records",
+    "ehr",
+    "epic",
+    "cerner"
+  ],
+  "excel": [
+    "spreadsheets",
+    "microsoft office"
+  ],
+  "front-end": [
+    "react",
+    "frontend"
+  ],
+  "frontend": [
+    "react",
+    "front-end"
+  ],
+  "git": [
+    "github",
+    "version control"
+  ],
+  "javascript": [
+    "js"
+  ],
+  "js": [
+    "javascript"
+  ],
+  "kpi": [
+    "kpis",
+    "key performance indicators",
+    "metrics"
+  ],
+  "lesson planning": [
+    "lesson plans",
+    "curriculum"
+  ],
+  "machine learning": [
+    "pytorch",
+    "ml",
+    "model"
+  ],
+  "microsoft office": [
+    "excel",
+    "word",
+    "powerpoint",
+    "outlook",
+    "ms office"
+  ],
+  "ml": [
+    "machine learning",
+    "pytorch"
+  ],
+  "ms office": [
+    "microsoft office",
+    "excel",
+    "word"
+  ],
+  "p&l": [
+    "profit and loss",
+    "budget"
+  ],
+  "project management": [
+    "project manager",
+    "managed projects",
+    "project coordination"
+  ],
+  "qa": [
+    "quality assurance",
+    "testing"
+  ],
+  "quality assurance": [
+    "qa",
+    "testing"
+  ],
+  "quickbooks": [
+    "bookkeeping"
+  ],
+  "registered nurse": [
+    "rn"
+  ],
+  "regression testing": [
+    "regression test"
+  ],
+  "rest": [
+    "rest api",
+    "restful"
+  ],
+  "rest api": [
+    "rest",
+    "restful"
+  ],
+  "rn": [
+    "registered nurse"
+  ],
+  "salesforce": [
+    "crm"
+  ],
+  "scrum": [
+    "agile",
+    "stand-ups"
+  ],
+  "social media": [
+    "instagram",
+    "linkedin",
+    "tiktok",
+    "facebook"
+  ],
+  "spreadsheets": [
+    "excel",
+    "google sheets"
+  ],
+  "sql": [
+    "sql server",
+    "database"
+  ],
+  "stakeholder management": [
+    "stakeholders",
+    "cross-functional"
+  ],
+  "test": [
+    "testing",
+    "tests"
+  ],
+  "testing": [
+    "test",
+    "tests",
+    "qa",
+    "quality assurance"
+  ],
+  "ts": [
+    "typescript"
+  ],
+  "typescript": [
+    "ts"
+  ],
+  "unit testing": [
+    "pytest",
+    "test suite"
+  ],
+  "version control": [
+    "git",
+    "github"
+  ],
+  "web development": [
+    "react",
+    "web app"
+  ]
+}

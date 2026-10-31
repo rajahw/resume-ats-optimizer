@@ -14,6 +14,9 @@ Commands:
   apply      apply an edit set (replace / delete / insert_after / reorder_projects)
   check      verify an output against canon: diff, voice lint, page budget, parse
   budget     measure a resume as submitted: pages, spare lines, per-bullet wrap slack
+  import     convert a Word (.docx/.doc/.rtf) resume into canon_resume.odt
+  init-map   write a blank pii.txt for the user to fill in with their real details
+  tokenize   swap the real details listed in pii.txt for [Token] placeholders in canon
   fill       replace [Token] placeholders from a local pii.txt into a filled copy (*_Resume.pdf or .odt)
   doctor     report whether this machine can measure pages (and a resume's fonts)
   split      split a pasted inbox of postings into one application folder each,
@@ -110,39 +113,11 @@ SPLIT_RE = re.compile(
     re.I,
 )
 
-# Small stem / synonym table for near-miss detection.
-SYNONYMS = {
-    "ci/cd": ["continuous integration", "continuous delivery", "continuous deployment", "pipelines"],
-    "continuous integration": ["ci/cd", "pipelines"],
-    "js": ["javascript"],
-    "javascript": ["js"],
-    "ts": ["typescript"],
-    "typescript": ["ts"],
-    "testing": ["test", "tests", "qa", "quality assurance"],
-    "test": ["testing", "tests"],
-    "qa": ["quality assurance", "testing"],
-    "quality assurance": ["qa", "testing"],
-    "automation": ["automated", "automatic"],
-    "automated": ["automation"],
-    "unit testing": ["pytest", "test suite"],
-    "regression testing": ["regression test"],
-    "version control": ["git", "github"],
-    "git": ["github", "version control"],
-    "rest": ["rest api", "restful"],
-    "rest api": ["rest", "restful"],
-    "sql": ["sql server", "database"],
-    "database": ["sql", "sql server"],
-    "agile": ["scrum", "stand-ups", "sprint"],
-    "scrum": ["agile", "stand-ups"],
-    "machine learning": ["pytorch", "ml", "model"],
-    "ml": ["machine learning", "pytorch"],
-    "c++": ["cpp"],
-    "devops": ["azure devops", "ci/cd"],
-    "cloud": ["azure"],
-    "frontend": ["react", "front-end"],
-    "front-end": ["react", "frontend"],
-    "web development": ["react", "web app"],
-}
+# Near-miss pairs: a posting term and phrasings a resume may use for it. Data,
+# not code, so anyone can add their own field's terms - see scripts/synonyms.json.
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "synonyms.json"),
+          encoding="utf-8") as _fh:
+    SYNONYMS = json.load(_fh)
 
 
 # ---------------------------------------------------------------- zip helpers
@@ -194,6 +169,8 @@ def strip_tags(xml):
     """Inner XML -> plain text, expanding <text:s> runs and tabs."""
     out = re.sub(r'<text:s text:c="(\d+)"/>', lambda m: " " * int(m.group(1)), xml)
     out = out.replace("<text:s/>", " ").replace("<text:tab/>", "\t")
+    # A manual line break separates words; dropping it glued them together.
+    out = out.replace("<text:line-break/>", " ")
     out = re.sub(r"<[^>]+>", "", out)
     return unesc(out)
 
@@ -333,79 +310,196 @@ def normalize_content(content, width_in):
 
 # ---------------------------------------------------------------- extract
 
+# The four headings this tool started with keep their original id prefixes, so
+# edit sets written against an existing canon still resolve. Every other section
+# is keyed by a slug of its own heading: certifications.b1, volunteer1.head.
+LEGACY_PREFIX = {"EDUCATION": "edu", "SKILLS": "skills", "EXPERIENCE": "exp",
+                 "PROJECTS": "proj"}
+
+# What a section holds, judged from its heading. Skills-type sections carry
+# `Label: values` lines; summary-type ones carry prose paragraphs; everything
+# else carries entries - a header line with a tab before its dates, then bullets.
+SKILLS_KIND_RE = re.compile(r"skills|competenc|proficienc|technolog|languages|tools", re.I)
+SUMMARY_KIND_RE = re.compile(r"summary|profile|objective|highlights|about me", re.I)
+HEADING_MAX_WORDS = 5
+
+
+def heading_of(txt, seen_heading):
+    """This standalone paragraph's text if it is a section heading, else None.
+
+    A known section word always counts. Short all-caps text counts too, but
+    only once a known heading has been seen: before that it is the contact
+    block, where a name is often set in capitals.
+    """
+    if not txt or "\t" in txt:
+        return None
+    if txt in SECTION_HEADINGS or GENERIC_SECTION_RE.match(txt):
+        return txt
+    if (seen_heading and txt == txt.upper() and any(c.isalpha() for c in txt)
+            and not any(c.isdigit() for c in txt) and ":" not in txt
+            and len(txt.split()) <= HEADING_MAX_WORDS):
+        return txt
+    return None
+
+
+HEADER_MAX_WORDS = 30
+HEADER_SIDE_WORDS = 8            # what follows the tab: dates, a location
+DATE_TAIL_CHARS = 40             # an undelimited date must sit this close to the end
+ENTRY_PROSE_WORDS = 8            # a description paragraph, not a job-title line
+
+
+def split_header(txt):
+    """(left, mid, right) if this line heads an entry, else None.
+
+    Two shapes. A tab before the dates or place: `Name | detail<tab>June 2026 -
+    Present`. Or the dates at the end with no tab: `Employer, City Title |
+    January 2024 - Present`. A long sentence with a stray tab in it is a
+    description, not a header.
+    """
+    if len(txt.split()) > HEADER_MAX_WORDS:
+        return None
+    left = right = None
+    if "\t" in txt:
+        left, right = (s.strip() for s in txt.split("\t", 1))
+        if len(right.split()) > HEADER_SIDE_WORDS:
+            left = right = None
+    if left is None:
+        m = DATE_RE.search(txt)
+        if not m or txt.endswith(".") or len(txt) - m.start() > DATE_TAIL_CHARS:
+            return None
+        left, right = txt[:m.start()].rstrip(" |,-–—\t"), txt[m.start():].strip()
+    mid = ""
+    if "|" in left:
+        left, mid = left.split("|", 1)
+        left, mid = left.strip(), "| " + mid.strip()
+    return left, mid, right
+
+
+def is_entry_prose(txt):
+    """A description written as a paragraph rather than a bullet. Job-title
+    lines are short and rarely end in a period, and stay uneditable."""
+    words = len(txt.split())
+    return words >= ENTRY_PROSE_WORDS and (txt.endswith(".") or words >= 2 * ENTRY_PROSE_WORDS)
+
+
+def section_kind(heading):
+    if SKILLS_KIND_RE.search(heading):
+        return "skills"
+    if SUMMARY_KIND_RE.search(heading):
+        return "summary"
+    return "entries"
+
+
+def _heading_blocks(content):
+    """(match, heading or None, plain text) for every top-level block of the body."""
+    body_start = content.find("<office:body>")
+    seen = False
+    for m in BLOCK_RE.finditer(content, body_start):
+        if m.group(1) is None:
+            yield m, None, None
+            continue
+        txt = strip_tags(m.group(2) or "").strip()
+        heading = heading_of(txt, seen)
+        seen = seen or bool(heading)
+        yield m, heading, txt
+
+
+def section_headings(content):
+    """Canon's own section headings, in document order."""
+    return [h for _, h, _ in _heading_blocks(content) if h]
+
+
 def extract_units(content):
     """Editable text units. Contact block and section headings are never surfaced."""
     units = []
-    body_start = content.find("<office:body>")
-    body = content[body_start:]
+    section = kind = prefix = None
+    base = None          # id stem of the entry being read: exp1, volunteer2, edu1
+    parent = None        # that entry's header id
+    entries = {}         # prefix -> entries seen in that section
+    used = set()
+    b_i = p_i = 0
 
-    section = None
-    job = None
-    exp_i = proj_i = 0
-    b_i = 0
-    seen_heading = False
-
-    for m in BLOCK_RE.finditer(body):
-        if m.group(1) is not None:
-            kind, attrs, inner = "p", m.group(1), m.group(2) or ""
-        else:
-            kind, attrs, inner = "list", m.group(3), m.group(4) or ""
-        if kind == "p":
-            txt = strip_tags(inner).strip()
-            if txt in SECTION_HEADINGS:
-                section = txt
-                seen_heading = True
-                continue
-            if not seen_heading or not txt:
-                continue  # contact block / spacers - never editable
-            if section == "SKILLS":
+    for m, heading, txt in _heading_blocks(content):
+        if heading:
+            section, kind = heading, section_kind(heading)
+            prefix = LEGACY_PREFIX.get(heading.upper()) or slug(heading)
+            stem, n = prefix, 2
+            while prefix in used:
+                prefix, n = "%s-%d" % (stem, n), n + 1
+            used.add(prefix)
+            base = parent = None
+            b_i = p_i = 0
+            continue
+        if section is None:
+            continue  # contact block - never editable
+        if txt is not None:
+            if not txt:
+                continue  # spacer
+            inner = m.group(2) or ""
+            if kind == "skills":
+                # Several `Label: values` lines in one paragraph, split by manual
+                # line breaks: each line is its own unit, so editing one category
+                # cannot flatten or swallow the others.
+                lines = [strip_tags(s).strip() for s in inner.split(LINE_BREAK)]
+                labeled = [(k, re.match(r"([^:]+:)\s*(.*)$", t, re.S))
+                           for k, t in enumerate(lines) if t]
+                if len(lines) > 1 and sum(1 for _, sm in labeled if sm) > 1:
+                    for k, sm in labeled:
+                        if sm:
+                            units.append({
+                                "id": prefix + "." + re.sub(r"[^a-z]+", "", sm.group(1).lower()),
+                                "kind": "skills", "section": section,
+                                "label": sm.group(1), "text": sm.group(2).strip(),
+                                "_ptext": txt, "_line": k,
+                            })
+                    continue
                 sm = re.match(r"([^:]+:)\s*(.*)$", txt, re.S)
                 if sm:
                     units.append({
-                        "id": "skills." + re.sub(r"[^a-z]+", "", sm.group(1).lower()),
+                        "id": prefix + "." + re.sub(r"[^a-z]+", "", sm.group(1).lower()),
                         "kind": "skills", "section": section,
                         "label": sm.group(1), "text": sm.group(2).strip(),
                         "_ptext": txt,
                     })
-                continue
-            if "\t" in txt:
-                left, right = txt.split("\t", 1)
-                left, right = left.strip(), right.strip()
-                mid = ""
-                if "|" in left:
-                    left, mid = left.split("|", 1)
-                    left, mid = left.strip(), "| " + mid.strip()
-                if section == "EXPERIENCE":
-                    exp_i += 1
-                    uid = "exp%d.head" % exp_i
-                    job = uid
-                    b_i = 0
-                elif section == "PROJECTS":
-                    proj_i += 1
-                    uid = "proj%d.head" % proj_i
-                    job = uid
-                    b_i = 0
+                    continue
+            header = split_header(txt) if kind != "summary" else None
+            if header:
+                left, mid, right = header
+                n = entries[prefix] = entries.get(prefix, 0) + 1
+                if prefix == "edu":
+                    uid, base = "edu.head%d" % n, "edu%d" % n
                 else:
-                    uid = "edu.head%d" % (len(units) + 1)
+                    base = "%s%d" % (prefix, n)
+                    uid = base + ".head"
+                parent, b_i, p_i = uid, 0, 0
                 units.append({
                     "id": uid, "kind": "header", "section": section,
                     "left": left, "mid": mid, "right": right, "_ptext": txt,
                 })
-            # Anything else under a heading with no tab - a job title line, say -
-            # is deliberately not surfaced, so it cannot be tailored.
-        else:  # text:list
-            for lm in re.finditer(
-                r"<text:list-item>\s*<text:p([^>]*)>(.*?)</text:p>\s*</text:list-item>",
-                inner, re.S,
-            ):
-                b_i += 1
-                base = (job or "misc").replace(".head", "")
+                continue
+            if kind in ("skills", "summary") or is_entry_prose(txt):
+                p_i += 1
                 units.append({
-                    "id": "%s.b%d" % (base, b_i),
-                    "kind": "bullet", "section": section,
-                    "parent": job or "", "text": strip_tags(lm.group(2)).strip(),
-                    "_raw": lm.group(2),
+                    "id": "%s.p%d" % (base or prefix, p_i), "kind": "prose",
+                    "section": section, "text": txt, "_raw": inner,
                 })
+            # Anything else under an entries heading - a job title line, say -
+            # is deliberately not surfaced, so it cannot be tailored.
+            continue
+        for lm in re.finditer(
+            r"<text:list-item>\s*<text:p([^>]*)>(.*?)</text:p>\s*</text:list-item>",
+            m.group(4) or "", re.S,
+        ):
+            if not strip_tags(lm.group(2)).strip():
+                continue  # an empty list item is spacing, not a bullet
+            b_i += 1
+            units.append({
+                "id": "%s.b%d" % (base or prefix, b_i),
+                "kind": "bullet", "section": section,
+                "parent": parent or "",
+                "text": strip_tags(lm.group(2)).strip(),
+                "_raw": lm.group(2),
+            })
     return units
 
 
@@ -417,7 +511,7 @@ def resume_text(content):
     units = extract_units(content)
     parts = []
     for u in units:
-        if u["kind"] == "bullet":
+        if u["kind"] in ("bullet", "prose"):
             parts.append(u["text"])
         elif u["kind"] == "skills":
             parts.append(u["label"] + " " + u["text"])
@@ -478,7 +572,7 @@ def bullet_prose(content):
     dash in a document whose prose never does.
     """
     return [plain(u["text"]) for u in extract_units(content)
-            if u["kind"] == "bullet"]
+            if u["kind"] in ("bullet", "prose")]
 
 
 def canon_conventions(canon):
@@ -536,6 +630,7 @@ CONTACT_RE = re.compile(
 DATE_RE = re.compile(
     r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
     r"(?:\s+\d{1,2},)?\s+(?:19|20)\d{2}\b"
+    r"|\b(?:Spring|Summer|Fall|Autumn|Winter)\s+(?:19|20)\d{2}\b"
     r"|\b(?:19|20)\d{2}\s*[-–—]\s*(?:(?:19|20)\d{2}|Present|Current)\b",
     re.I,
 )
@@ -543,12 +638,18 @@ DATE_RE = re.compile(
 # Section words resumes use generally, not just canon's exact four headings.
 # This is what tells "a resume this editor cannot parse" apart from "not a
 # resume at all" - the two need different advice, so they need different signals.
+_SECTION_WORD = (
+    r"(?:(?:work|professional|technical|relevant|additional|clinical|teaching|research"
+    r"|leadership|volunteer|military|selected|core|key|career|community)\s+)?"
+    r"(?:experience|employment(?:\s+history)?|work\s+history|career\s+history|education"
+    r"|skills|projects|certifications?|licen[cs]es?|licensure|credentials|publications"
+    r"|presentations|awards|honors|leadership|activities|volunteering|volunteer(?:\s+work)?"
+    r"|service|references|summary|objective|profile|coursework|competencies|qualifications"
+    r"|languages|training|affiliations|memberships|interests|research|accomplishments"
+    r"|achievements|highlights|rotations)")
 GENERIC_SECTION_RE = re.compile(
-    r"^\s*(?:work |professional |technical |relevant |additional )?"
-    r"(?:experience|employment history|employment|education|skills|projects|"
-    r"certifications?|publications|awards|honors|leadership|activities|"
-    r"volunteer|references|summary|objective|profile|coursework)"
-    r"\s*:?\s*$",
+    r"^\s*(?:summary\s+of\s+|highlights\s+of\s+)?" + _SECTION_WORD
+    + r"(?:\s*(?:&|and|/|,)\s*" + _SECTION_WORD + r")*\s*:?\s*$",
     re.I,
 )
 
@@ -588,29 +689,27 @@ def shape_signals(content):
     text = document_text(content)
     lines = text.split("\n")
     bullets = [u for u in units if u["kind"] == "bullet"]
-    canon = [h for h in SECTION_HEADINGS if any(ln == h for ln in lines)]
-    other = sorted({ln.rstrip(":").strip() for ln in lines
-                    if GENERIC_SECTION_RE.match(ln) and ln not in SECTION_HEADINGS})
+    sections = section_headings(content)
 
     sig = {
-        "canon_sections": canon,
-        "other_sections": other,
+        "sections": sections,
         "units": len(units),
         "bullets": len(bullets),
         "contact": bool(CONTACT_RE.search("\n".join(lines[:8]))),
         "dates": len(DATE_RE.findall(text)),
         "words": len(text.split()),
+        "tokens": len(body_tokens(content[content.find("<office:body>"):])),
         "tells": [name for name, rx in OTHER_DOC_TELLS if rx.search(text)],
     }
-    # The editor works on canon's four headings and the units under them, so
-    # those two are what "editable at all" means. Everything else is context
-    # for the question put to the user.
-    sig["verdict"] = ("resume" if len(canon) >= 2 and len(bullets) >= 3
+    # Editable means headed sections with bullets under them. Everything else
+    # is context for the question put to the user.
+    sig["verdict"] = ("resume" if len(sections) >= 2 and len(bullets) >= 3
                       else "unrecognized")
     if sig["verdict"] == "resume":
         sig["reading"] = ""
-    elif len(other) >= 2:
-        sig["reading"] = "a resume in a layout this editor cannot parse"
+    elif len(sections) >= 2:
+        sig["reading"] = ("a resume in a layout this editor cannot parse - its "
+                          "bullets are not list items")
     elif sig["tells"]:
         sig["reading"] = "possibly " + " or ".join(sig["tells"])
     else:
@@ -624,16 +723,15 @@ def cmd_shape(args):
 
     print("VERDICT: %s%s" % (
         sig["verdict"], "" if ok else " - does not parse as a resume"))
-    print("  headings   %s" % (", ".join(sig["canon_sections"]) or
-                               "none of " + " / ".join(SECTION_HEADINGS)))
+    print("  headings   %s" % (", ".join(sig["sections"]) or "none recognized"))
     print("  editable   %d units, %d bullets%s" % (
         sig["units"], sig["bullets"], "" if sig["units"] else
         "   <- nothing here can be tailored"))
     print("  contact    %s" % ("present" if sig["contact"] else "absent"))
+    print("  placeholders %d%s" % (sig["tokens"], "" if sig["tokens"] else
+                                   "   <- personal details not yet tokenized"))
     print("  dates      %d" % sig["dates"])
     print("  length     %d words" % sig["words"])
-    if sig["other_sections"]:
-        print("  other headings found: %s" % ", ".join(sig["other_sections"]))
     if not ok:
         print("  reads like: %s" % sig["reading"])
         print("\nThis says the document is not in the shape this tool edits. It does\n"
@@ -762,6 +860,38 @@ def _unit_map(content):
     return {u["id"]: u for u in extract_units(content)}
 
 
+LINE_BREAK = "<text:line-break/>"
+
+
+def _set_skills_line(content, ptext, line, label, new):
+    """Rewrite one `Label: values` line of a multi-line skills paragraph.
+
+    Everything through the label (and the span carrying it) is kept, and so is
+    any padding (tabs, spaces) after the values; only the values change. Other
+    lines and the breaks between them are untouched.
+    """
+    for m in PARA_RE.finditer(content):
+        if strip_tags(m.group(2)).strip() != ptext.strip():
+            continue
+        segs = m.group(2).split(LINE_BREAK)
+        seg = segs[line]
+        at = seg.find(esc(label))
+        if at < 0:
+            sys.exit("apply: skills label %r is split across formatting; edit it "
+                     "in your editor instead" % label)
+        cut = at + len(esc(label))
+        close = seg.find("</text:span>", cut)
+        if close >= 0 and not strip_tags(seg[cut:close]).strip():
+            cut = close + len("</text:span>")
+            sep = "" if strip_tags(seg[:cut]).endswith(" ") else " "
+        else:
+            sep = " "
+        trail = TRAIL_FILLER_RE.search(seg[cut:]).group(0)
+        segs[line] = seg[:cut] + sep + esc(new) + trail
+        return content[: m.start(2)] + LINE_BREAK.join(segs) + content[m.end(2):]
+    sys.exit("apply: could not locate skills paragraph %r" % ptext[:40])
+
+
 def _set_skills_value(content, ptext, new):
     """Rewrite a Skills line's value, keeping the bold label span intact.
 
@@ -808,6 +938,21 @@ def _replace_in_para(content, ptext, old, new):
     sys.exit("apply: could not locate paragraph for %r" % ptext[:40])
 
 
+# Whitespace markup at either end of a unit: tabs, spaces, and manual line
+# breaks that a Word-made document uses as blank lines around a paragraph.
+EDGE_FILLER = r'(?:\s|<text:(?:tab|line-break|s(?: text:c="\d+")?)/>)*'
+LEAD_FILLER_RE = re.compile("^" + EDGE_FILLER)
+TRAIL_FILLER_RE = re.compile(EDGE_FILLER + "$")
+
+
+def split_edges(raw):
+    """(leading spacing, text, trailing spacing) of a unit's raw XML."""
+    lead = LEAD_FILLER_RE.match(raw).group(0)
+    rest = raw[len(lead):]
+    trail = TRAIL_FILLER_RE.search(rest).group(0)
+    return lead, rest[:len(rest) - len(trail)], trail
+
+
 def cmd_apply(args):
     content = read_content(args.resume)
     edits = json.load(open(args.edits, encoding="utf-8"))
@@ -843,20 +988,24 @@ def cmd_apply(args):
             u = units.get(base)
         if u is None:
             sys.exit("apply: unknown id %r" % uid)
-        if u["kind"] == "bullet":
+        if u["kind"] in ("bullet", "prose"):
             old = u["_raw"]
             needle = ">" + old + "<"
             if content.count(needle) != 1:
                 sys.exit("apply: bullet %s text matches %d places, need exactly 1"
                          % (uid, content.count(needle)))
-            # A bullet carrying inline spans (bolded metrics, say) is replaced
-            # whole. The emphasis described the old wording, so it cannot survive
-            # a rewrite - but say which bullet lost it rather than dropping it
+            # Spacing around the text (blank lines made of tabs and breaks)
+            # stays; only the text between is replaced. Inline spans within it
+            # (bolded metrics, say) described the old wording and cannot survive
+            # a rewrite - say which unit lost them rather than dropping them
             # silently, and never refuse the edit outright.
-            if "<" in old:
+            lead, core, trail = split_edges(old)
+            if "<" in core:
                 print("note: %s had inline emphasis; it was dropped with the "
                       "old wording" % uid)
-            content = content.replace(needle, ">" + esc(new) + "<", 1)
+            content = content.replace(needle, ">" + lead + esc(new) + trail + "<", 1)
+        elif u["kind"] == "skills" and u.get("_line") is not None:
+            content = _set_skills_line(content, u["_ptext"], u["_line"], u["label"], new)
         elif u["kind"] == "skills":
             content = _set_skills_value(content, u["_ptext"], new)
         elif u["kind"] == "header":
@@ -910,52 +1059,66 @@ def cmd_apply(args):
                      % (old, content.count(needle)))
         content = content.replace(needle, ">" + esc(new) + "<", 1)
 
-    order = edits.get("reorder_projects")
-    if order:
-        content = _reorder_projects(content, order)
+    # {"<Heading>": [entry names]}; reorder_projects is the older spelling.
+    reorders = dict(edits.get("reorder", {}))
+    if edits.get("reorder_projects"):
+        reorders.setdefault("PROJECTS", edits["reorder_projects"])
+    for heading, order in reorders.items():
+        content = _reorder_entries(content, heading, order)
 
     write_odt(args.resume, args.output, content)
     print("wrote %s" % args.output)
 
 
-# One project = its title paragraph, the bullet list that follows, and the
-# trailing spacer paragraph. The open-tag pattern carries the (?<!/) guard so a
-# self-closing spacer is never mistaken for the start of a project.
-PROJECT_BLOCK_RE = re.compile(
-    r"<text:p[^>]*(?<!/)>.*?</text:p>"          # title line
-    r"(?:<text:list\b[^>]*>.*?</text:list>)?"   # its bullets
-    r"(?:<text:p[^>]*/>)?",                     # trailing spacer
-    re.S,
-)
+# A self-closing spacer paragraph, which travels with the entry it follows.
+SPACER_RE = re.compile(r"<text:p[^>]*/>")
 
 
-def _reorder_projects(content, order):
-    start = content.find(">PROJECTS<")
-    if start < 0:
-        sys.exit("apply: PROJECTS section not found")
-    tail = content.find("</text:p>", start) + len("</text:p>")
+def _reorder_entries(content, heading, order):
+    """Reorder the entries of one section, which runs from its heading to the next.
 
-    blocks = []  # (name, abs_start, abs_end)
-    for m in PROJECT_BLOCK_RE.finditer(content, tail):
-        text = strip_tags(m.group(0)).strip()
-        if not text:
+    An entry runs from its header line (the one with a tab before its dates) to
+    the next header: job-title lines, bullets, and spacers move with it. The
+    last entry ends after its last text or list, so whatever closes the section
+    stays put.
+    """
+    start = end = None
+    heads = []     # (name, header start)
+    last_end = None
+    for m, h, txt in _heading_blocks(content):
+        if h:
+            if start is not None:
+                end = m.start()
+                break
+            if h.lower() == heading.lower():
+                start = m.end()
             continue
-        name = text.split("|")[0].split("\t")[0].strip()
-        blocks.append((name, m.start(), m.end()))
+        if start is None:
+            continue
+        if txt and "\t" in txt:
+            heads.append((txt.split("|")[0].split("\t")[0].strip(), m.start()))
+        if txt or txt is None:
+            last_end = m.end()
+    if start is None:
+        sys.exit("apply: section %s not found" % heading)
+    if not heads:
+        sys.exit("apply: section %s has no entries to reorder" % heading)
+    spacer = SPACER_RE.match(content, last_end)
+    if spacer:
+        last_end = spacer.end()
 
-    wanted = [b for b in blocks if b[0] in order]
-    missing = [o for o in order if o not in [b[0] for b in wanted]]
+    blocks = [(name, s, heads[i + 1][1] if i + 1 < len(heads) else last_end)
+              for i, (name, s) in enumerate(heads)]
+    names = [b[0] for b in blocks]
+    missing = [o for o in order if o not in names]
     if missing:
-        sys.exit("apply: reorder_projects names not found: %s" % ", ".join(missing))
-    if len(wanted) != len(order):
-        sys.exit("apply: reorder_projects must list every project exactly once")
+        sys.exit("apply: reorder names not found under %s: %s"
+                 % (heading, ", ".join(missing)))
+    if sorted(order) != sorted(names):
+        sys.exit("apply: reorder must list every %s entry exactly once" % heading)
 
-    # Blocks are contiguous, so splice the whole span by real offsets rather
-    # than assuming a join of the pieces is a literal substring of the document.
-    lo, hi = wanted[0][1], wanted[-1][2]
-    if any(wanted[i][2] != wanted[i + 1][1] for i in range(len(wanted) - 1)):
-        sys.exit("apply: project blocks are not contiguous; refusing to reorder")
-    by_name = {n: content[s:e] for n, s, e in wanted}
+    lo, hi = blocks[0][1], blocks[-1][2]
+    by_name = {n: content[s:e] for n, s, e in blocks}
     return content[:lo] + "".join(by_name[o] for o in order) + content[hi:]
 
 
@@ -1015,11 +1178,17 @@ def render_unavailable_reason():
 
 
 def to_pdf(odt):
-    """Render to PDF via whatever LibreOffice this machine has, or None.
+    """Render to PDF via whatever LibreOffice this machine has, or None."""
+    return soffice_convert(odt, "pdf")
+
+
+def soffice_convert(src, fmt):
+    """Convert src to `fmt` (pdf, odt) with LibreOffice; the new file's path, or None.
 
     The temp dir lives under $HOME, not /tmp: a Flatpak LibreOffice gets a
     private /tmp, so anything staged there is invisible to it and the load
-    silently fails. The input is copied in for the same reason.
+    silently fails. The input is copied in for the same reason. The caller
+    removes the returned file's directory.
     """
     soffice = find_soffice()
     if not soffice:
@@ -1033,18 +1202,18 @@ def to_pdf(odt):
     # somewhere no .gitignore reaches.
     ok = False
     try:
-        staged = os.path.join(out, os.path.basename(odt))
-        shutil.copy(odt, staged)
+        staged = os.path.join(out, os.path.basename(src))
+        shutil.copy(src, staged)
         profile = pathlib.Path(os.path.expanduser(SOFFICE_PROFILE)).resolve().as_uri()
         try:
             subprocess.run(
                 soffice + ["-env:UserInstallation=" + profile, "--headless",
-                           "--convert-to", "pdf", "--outdir", out, staged],
+                           "--convert-to", fmt, "--outdir", out, staged],
                 check=True, capture_output=True, timeout=180)
         except (OSError, subprocess.SubprocessError):
             return None
-        pdf = os.path.splitext(staged)[0] + ".pdf"
-        if not os.path.exists(pdf):
+        pdf = os.path.splitext(staged)[0] + "." + fmt
+        if not os.path.exists(pdf) or pdf == staged:
             return None
         ok = True
         return pdf
@@ -1145,8 +1314,11 @@ def render_layout(odt_path, keep_pdf=None):
             box.update(text=" ".join(words), page=page_no)
             lines.append(box)
     pages = int(re.search(r"Pages:\s+(\d+)", info).group(1))
+    # The deepest text on the final page: on a multi-page document, page one's
+    # bottom says nothing about whether the last page still has room.
+    final = [l["yMax"] for l in lines if l["page"] == pages] or [l["yMax"] for l in lines]
     return {"pages": pages,
-            "last": max([l["yMax"] for l in lines] or [0.0]) or None,
+            "last": max(final or [0.0]) or None,
             "lines": lines, "flat": flat, "substitutes": subs}
 
 
@@ -1215,14 +1387,18 @@ def render_as_submitted(odt_path, mapping):
         shutil.rmtree(stage, ignore_errors=True)
 
 
-def page_report(odt_path, mapping):
-    """Render as submitted and work out the line budget, or None."""
+def page_report(odt_path, mapping, max_pages=None):
+    """Render as submitted and work out the line budget, or None.
+
+    max_pages is the length the document may run - canon's own page count. It
+    defaults to this document's, which is what measuring canon itself means.
+    """
     layout = render_as_submitted(odt_path, mapping)
     if layout is None:
         return None
     units = extract_units(read_content(odt_path))
     bullets = [(u["id"], fill_text(plain(u["text"]), mapping))
-               for u in units if u["kind"] == "bullet"]
+               for u in units if u["kind"] in ("bullet", "prose")]
     get = _page_layout_getter(odt_path)
     right_edge = ((get("fo:margin-left") or 0.5) + _page_text_width_in(odt_path)) * 72.0
     geo = bullet_geometry(layout["lines"], bullets, right_edge)
@@ -1239,8 +1415,9 @@ def page_report(odt_path, mapping):
 
     hard = page_bottom_limit(odt_path)
     safe = hard - SAFE_RESERVE_PT
-    if layout["pages"] > 1:
-        spare = -sum(1 for l in lines if l["page"] > 1)
+    limit = max_pages or layout["pages"]
+    if layout["pages"] > limit:
+        spare = -sum(1 for l in lines if l["page"] > limit)
     else:
         spare = int((safe - (layout["last"] or safe)) // pitch)
     layout.update(geo=geo, order=[u for u, _ in bullets], hard=hard, safe=safe,
@@ -1252,7 +1429,7 @@ def page_report(odt_path, mapping):
 # rendering it again on every call. Only geometry is stored - never line text,
 # which holds real values when the render was filled from the map. The key is
 # the file and map as they stand, so editing either one invalidates it.
-GEOMETRY_CACHE_VERSION = 1
+GEOMETRY_CACHE_VERSION = 2
 
 
 def _geometry_key(path, map_path):
@@ -1277,7 +1454,8 @@ def cached_geometry(path, map_path):
             entry = json.load(fh)
         if entry["key"] != _geometry_key(path, map_path):
             return None
-        return {"n_lines": entry["n_lines"], "spare": entry["spare"],
+        return {"pages": entry["pages"], "n_lines": entry["n_lines"],
+                "spare": entry["spare"],
                 "geo": {k: tuple(v) for k, v in entry["geo"].items()},
                 "substitutes": []}
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -1287,7 +1465,8 @@ def cached_geometry(path, map_path):
 def store_geometry(path, map_path, report):
     if report is None or report["substitutes"]:
         return
-    entry = {"key": _geometry_key(path, map_path), "n_lines": report["n_lines"],
+    entry = {"key": _geometry_key(path, map_path), "pages": report["pages"],
+             "n_lines": report["n_lines"],
              "spare": report["spare"], "geo": report["geo"]}
     target = _geometry_file()
     try:
@@ -1297,6 +1476,16 @@ def store_geometry(path, map_path, report):
         os.replace(target + ".tmp", target)
     except OSError:
         pass
+
+
+def canon_geometry(path, map_path, mapping):
+    """Canon's page report, from the cache when canon and the map are unchanged."""
+    report = cached_geometry(path, map_path)
+    if report is None:
+        report = page_report(path, mapping)
+        if not unmeasurable(report, path):
+            store_geometry(path, map_path, report)
+    return report
 
 
 def unmeasurable(report, path):
@@ -1329,13 +1518,13 @@ def cmd_budget(args):
     store_geometry(args.resume, args.map, report)
     last, safe, hard = report["last"], report["safe"], report["hard"]
     print("measured: %s" % describe_measurement(report))
-    print("pages: %d" % report["pages"])
+    print("pages: %d (tailored versions may not run longer)" % report["pages"])
     print("last content yMax: %.2fpt" % last)
     print("reserve to hard limit (%.0fpt): %.2fpt" % (hard, hard - last))
     print("reserve to safe buffer (%.0fpt): %.2fpt" % (safe, safe - last))
     print("spare lines above the safe buffer: %d (at %.1fpt per line)"
           % (report["spare"], report["pitch"]))
-    if report["pages"] == 1 and safe - last > 50:
+    if safe - last > 50:
         print("\nNOTABLE: ~%.0fpt of unused space below the safe buffer - "
               "consider using it (add a bullet, lengthen one, or a small "
               "font-size nudge)." % (safe - last))
@@ -1433,8 +1622,7 @@ def read_pii_map(path, apostrophe=None):
                 sys.exit("fill: %s line %d: key %r is not a [Token]"
                          % (path, lineno, key))
             if not value:
-                sys.exit("fill: %s line %d: %s has an empty value"
-                         % (path, lineno, key))
+                continue  # left blank: not on this resume
             if apostrophe:
                 value = value.replace("'", apostrophe).replace("’", apostrophe)
             mapping[key] = value
@@ -1528,20 +1716,29 @@ def cmd_fill(args):
         if why:
             if args.no_page_check:
                 warnings.append("%s; page check SKIPPED by --no-page-check - "
-                                "nothing verified that the filled resume fits "
-                                "one page" % why)
+                                "nothing verified that the filled resume stays "
+                                "within canon's length" % why)
             else:
                 problems.append("page check could not run: %s. Fix that, or "
                                 "pass --no-page-check to accept an unverified "
                                 "fill" % why)
         else:
             pages, last = report["pages"], report["last"]
-            print("\npages: %d" % pages)
+            limit = 1
+            if os.path.exists(args.canon):
+                canon_rep = canon_geometry(args.canon, args.map, mapping)
+                if unmeasurable(canon_rep, args.canon):
+                    problems.append("canon could not be measured, so its page "
+                                    "count is unknown: %s"
+                                    % unmeasurable(canon_rep, args.canon))
+                else:
+                    limit = canon_rep["pages"]
+            print("\npages: %d (canon: %d)" % (pages, limit))
             print("last content yMax: %.2fpt" % last)
             print("reserve to hard limit (%.0fpt): %.2fpt" % (hard, hard - last))
             print("reserve to safe buffer (%.0fpt): %.2fpt" % (safe, safe - last))
-            if pages > 1:
-                problems.append("filled resume is %d pages; must be 1" % pages)
+            if pages > limit:
+                problems.append("filled resume is %d pages; canon is %d" % (pages, limit))
             elif last > hard:
                 problems.append("filled content overflows bottom margin "
                                 "(%.2fpt); real values are longer than the "
@@ -1652,21 +1849,30 @@ def cmd_check(args):
         changed_other = True
         print("  + header added:   %s" % key[1])
 
-    order_a = [u["left"] for u in canon_units
-               if u["kind"] == "header" and u["section"] == "PROJECTS"]
-    order_b = [u["left"] for u in out_units
-               if u["kind"] == "header" and u["section"] == "PROJECTS"]
-    if order_a != order_b and sorted(order_a) == sorted(order_b):
-        changed_other = True
-        print("  ~ projects reordered: %s -> %s"
-              % (" | ".join(order_a), " | ".join(order_b)))
+    for sec in dict.fromkeys(u["section"] for u in canon_units if u["kind"] == "header"):
+        order_a = [u["left"] for u in canon_units
+                   if u["kind"] == "header" and u["section"] == sec]
+        order_b = [u["left"] for u in out_units
+                   if u["kind"] == "header" and u["section"] == sec]
+        if order_a != order_b and sorted(order_a) == sorted(order_b):
+            changed_other = True
+            print("  ~ %s reordered: %s -> %s"
+                  % (sec.lower(), " | ".join(order_a), " | ".join(order_b)))
 
+    prose_changed = []
     for uid in sorted(set(cu) | set(ou)):
         a, b = cu.get(uid, {}), ou.get(uid, {})
-        if a.get("kind") != "skills" and b.get("kind") != "skills":
+        if (a.get("kind") not in ("skills", "prose")
+                and b.get("kind") not in ("skills", "prose")):
             continue
         if a.get("text") != b.get("text"):
+            if b.get("kind") == "prose":
+                prose_changed.append(b["text"])
             changed_other = True
+            before, after = len((a.get("text") or "").split()), len((b.get("text") or "").split())
+            if before and after < before / 2:
+                warnings.append("%s lost most of its text (%d words -> %d); confirm "
+                                "nothing was dropped by mistake" % (uid, before, after))
             print("  ~ %s\n      was: %s\n      now: %s"
                   % (uid, a.get("text"), b.get("text")))
 
@@ -1692,7 +1898,8 @@ def cmd_check(args):
     canon_vocab = plain(resume_text(canon)).lower()
     canon_sentences = max([sentence_count(t) for t in bullet_prose(canon)] or [1])
 
-    for t in [plain(b) for _, b in reworded] + [plain(t) for t in came]:
+    for t in ([plain(b) for _, b in reworded] + [plain(t) for t in came]
+              + [plain(t) for t in prose_changed]):
         p, w = lint_prose(t, conv)
         problems += p
         warnings += w
@@ -1715,12 +1922,8 @@ def cmd_check(args):
         out_rep = page_report(args.output, mapping)
         why = unmeasurable(out_rep, args.output)
         if not why:
-            canon_rep = cached_geometry(args.canon, args.map)
-            if canon_rep is None:
-                canon_rep = page_report(args.canon, mapping)
-                why = unmeasurable(canon_rep, args.canon)
-                if not why:
-                    store_geometry(args.canon, args.map, canon_rep)
+            canon_rep = canon_geometry(args.canon, args.map, mapping)
+            why = unmeasurable(canon_rep, args.canon)
     except Exception as e:
         why = "PDF conversion failed (%s)" % e
     if why:
@@ -1728,7 +1931,7 @@ def cmd_check(args):
         # verified half of what check promises.
         if args.no_page_check:
             warnings.append("%s; page and parse checks SKIPPED by --no-page-check "
-                            "- this run did not verify one page, bottom margin, "
+                            "- this run did not verify page count, bottom margin, "
                             "or text recoverability" % why)
         else:
             problems.append("page and parse checks could not run: %s. Fix that, "
@@ -1739,8 +1942,9 @@ def cmd_check(args):
         print("\n=== page budget (%s) ===" % describe_measurement(out_rep))
         print("  pages %d, last content yMax %.2fpt (margin %.0fpt)"
               % (pages, last, hard))
-        if pages > 1:
-            problems.append("resume is %d pages; must be 1" % pages)
+        if pages > canon_rep["pages"]:
+            problems.append("resume is %d pages; canon is %d"
+                            % (pages, canon_rep["pages"]))
         elif last > hard:
             problems.append("content overflows bottom margin (%.2fpt)" % last)
         elif last > hard - SAFE_RESERVE_PT:
@@ -1775,16 +1979,22 @@ def cmd_check(args):
 
         # parse check - what a real parser's text extraction would see
         flat = out_rep["flat"]
+        squashed = _squash(flat)
+
+        def find_heading(h, start):
+            # As written first; a style may render it in other case.
+            i = squashed.find(_squash(h), start)
+            return i if i >= 0 else squashed.lower().find(_squash(h).lower(), start)
+
         pos = -1
-        for h in SECTION_HEADINGS:
-            i = flat.find(h)
-            if i < 0:
-                problems.append("parse check: heading %s not recoverable" % h)
-            elif i < pos:
+        for h in section_headings(canon):
+            i = find_heading(h, pos + 1)
+            if i >= 0:
+                pos = i
+            elif find_heading(h, 0) >= 0:
                 problems.append("parse check: heading %s out of reading order" % h)
             else:
-                pos = i
-        squashed = _squash(flat)
+                problems.append("parse check: heading %s not recoverable" % h)
         for uid, u in ou.items():
             if u.get("kind") == "bullet":
                 # plain(): the PDF renders an apostrophe, not `&apos;`. The
@@ -2289,6 +2499,188 @@ def cmd_status(args):
         print("%-10s %s%s" % (stage, folder, "  - " + note if note else ""))
 
 
+# ---------------------------------------------------------------- onboarding
+#
+# Getting a new user from "my resume is a Word file" to a tokenized canon
+# without editing XML or the document by hand. Placeholders are mandatory: the
+# skill never extracts a canon that still holds real details, so the guarantee
+# that Claude never sees them holds from the first run.
+
+IMPORTABLE = (".docx", ".doc", ".rtf", ".odt")
+BACKUP_DIR = "private"           # gitignored and hook-protected: holds real values
+
+
+def cmd_import(args):
+    ext = os.path.splitext(args.input)[1].lower()
+    if ext not in IMPORTABLE:
+        sys.exit("import: %s is not a resume file this can read (%s). From Google "
+                 "Docs, use File > Download > Microsoft Word (.docx)."
+                 % (args.input, ", ".join(IMPORTABLE)))
+    if not os.path.isfile(args.input):
+        sys.exit("import: %s not found" % args.input)
+    if os.path.exists(args.output):
+        sys.exit("import: %s already exists. Move it aside first if you mean to "
+                 "replace your canon." % args.output)
+    if ext == ".odt":
+        shutil.copy(args.input, args.output)
+    else:
+        converted = soffice_convert(args.input, "odt")
+        if not converted:
+            sys.exit("import: LibreOffice could not convert %s (%s)"
+                     % (args.input, render_unavailable_reason()))
+        try:
+            shutil.move(converted, args.output)
+        finally:
+            shutil.rmtree(os.path.dirname(converted), ignore_errors=True)
+    print("imported %s -> %s\n" % (args.input, args.output))
+    cmd_shape(argparse.Namespace(resume=args.output, exit_code=False))
+
+
+MAP_TEMPLATE = """\
+# Your real personal details. This file stays on your computer: it is never
+# committed to git, and Claude is blocked from opening it.
+#
+# After each "=", type the detail EXACTLY as it appears on your resume - same
+# spelling, capitals, and punctuation. Leave a line blank if your resume does
+# not have it. Add a line for anything else personal, such as every employer,
+# school, or personal link, with a new name in square brackets: [Company4] = ...
+#
+[Name] =
+[Email] =
+[Phone] =
+[City] =
+[State] =
+[Website] =
+[School] =
+[Company1] =
+[Company2] =
+[Company3] =
+"""
+
+
+def cmd_init_map(args):
+    if os.path.exists(args.map):
+        sys.exit("init-map: %s already exists; open it in a text editor to change it."
+                 % args.map)
+    with open(args.map, "w", encoding="utf-8") as fh:
+        fh.write(MAP_TEMPLATE)
+    print("wrote a blank %s. Open it in a text editor, fill in your details, "
+          "save it, then run tokenize." % args.map)
+
+
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+PHONE_RE = re.compile(r"\(?\b\d{3}\)?[ .-]?\d{3}[ .-]\d{4}\b")
+SHORT_VALUE_CHARS = 3            # a value this short can match ordinary text
+
+
+def _value_re(value):
+    return re.compile(r"(?<!\w)" + re.escape(value) + r"(?!\w)")
+
+
+def _swap_outside_tokens(text, rx, token):
+    """Replace rx with token in text, never inside an existing [Token]."""
+    out, n = [], 0
+    for piece in re.split("(" + TOKEN_RE.pattern + ")", text):
+        if TOKEN_RE.fullmatch(piece):
+            out.append(piece)
+            continue
+        piece, k = rx.subn(token, piece)
+        out.append(piece)
+        n += k
+    return "".join(out), n
+
+
+def tokenize_content(content, mapping):
+    """(content, {token: count}): each value swapped for its token.
+
+    Only text nodes and hyperlink targets are touched, longest value first so a
+    full name goes before a first name. A value split across formatting runs is
+    left alone here and reported by the caller's leftover check.
+    """
+    body_start = content.find("<office:body>")
+    head, body = content[:body_start], content[body_start:]
+    counts = dict.fromkeys(mapping, 0)
+    for token, value in sorted(mapping.items(), key=lambda kv: -len(kv[1])):
+        text_rx, attr_rx = _value_re(esc(value)), _value_re(esc_attr(value))
+        parts = []
+        for piece in XML_TOKEN_RE.findall(body):
+            if not piece.startswith("<"):
+                piece, n = _swap_outside_tokens(piece, text_rx, token)
+                counts[token] += n
+            elif "xlink:href=" in piece:
+                def fix(m):
+                    target, n = _swap_outside_tokens(m.group(1), attr_rx, token)
+                    target2, n2 = _swap_outside_tokens(target, _value_re(esc(value)), token)
+                    counts[token] += n + n2
+                    return 'xlink:href="%s"' % target2
+                piece = HREF_RE.sub(fix, piece)
+            parts.append(piece)
+        body = "".join(parts)
+    return head + body, counts
+
+
+def leftovers(content, mapping):
+    """Tokens whose value is still readable in the document, and kinds of contact
+    detail (email, phone) present that no token covers. Never a value."""
+    body = content[content.find("<office:body>"):]
+    text = strip_tags(body) + "\n" + " ".join(unesc(h) for h in HREF_RE.findall(body))
+    bare = TOKEN_RE.sub(" ", text)
+    still = sorted(t for t, v in mapping.items()
+                   if re.search(r"(?<!\w)" + re.escape(v) + r"(?!\w)", bare, re.I))
+    kinds = [k for k, rx in (("an email address", EMAIL_RE), ("a phone number", PHONE_RE))
+             if rx.search(bare)]
+    return still, kinds
+
+
+def cmd_tokenize(args):
+    content = read_content(args.resume)
+    apostrophe = canon_conventions(content)["forms"].get("apostrophe", (None,))[0]
+    mapping = read_pii_map(args.map, apostrophe=apostrophe)
+    new, counts = tokenize_content(content, mapping)
+
+    done = {t: n for t, n in counts.items() if n}
+    print("tokenized: " + ("  ".join("%s x%d" % (t, n) for t, n in sorted(done.items()))
+                           or "(nothing)"))
+    warnings, problems = [], []
+    for t in sorted(t for t, n in counts.items() if not n):
+        if t not in body_tokens(content[content.find("<office:body>"):]):
+            warnings.append("%s matched nothing - check it is typed exactly as on "
+                            "the resume" % t)
+    for t, n in sorted(done.items()):
+        if len(mapping[t]) <= SHORT_VALUE_CHARS and n > 1:
+            warnings.append("%s is a short value and was replaced %d times; open "
+                            "the resume and check every %s belongs there" % (t, n, t))
+
+    still, kinds = leftovers(new, mapping)
+    for t in still:
+        problems.append("%s is still in the document where formatting splits it "
+                        "(part bold, say). Retype that text in your editor, save, "
+                        "and run tokenize again" % t)
+    for k in kinds:
+        problems.append("%s is still in the document but not in %s - add it there "
+                        "with its own [Token] and run tokenize again" % (k, args.map))
+
+    if done:
+        backup = os.path.join(BACKUP_DIR, os.path.basename(args.resume)
+                              .replace(".odt", ".orig.odt"))
+        if not os.path.exists(backup):
+            os.makedirs(BACKUP_DIR, exist_ok=True)
+            shutil.copy(args.resume, backup)
+            print("original kept at %s" % backup)
+        write_odt(args.resume, args.resume, new)
+        print("wrote %s" % args.resume)
+
+    for w in warnings:
+        print("WARN: %s" % w)
+    for p in problems:
+        print("FAIL: %s" % p)
+    if problems:
+        sys.exit(1)
+    if not body_tokens(new[new.find("<office:body>"):]):
+        sys.exit("FAIL: no placeholders in the document - fill in %s first" % args.map)
+    print("\nOK - no listed detail remains readable")
+
+
 # ---------------------------------------------------------------- entry
 
 def cmd_normalize(args):
@@ -2302,6 +2694,28 @@ def cmd_normalize(args):
 def cmd_extract(args):
     units = public_units(extract_units(read_content(args.resume)))
     print(json.dumps(units, indent=2, ensure_ascii=False))
+
+
+# How to install each missing tool, per platform. Printed as-is by `doctor`,
+# so the skill can relay a command instead of describing one.
+INSTALL_HINTS = {
+    "darwin": {"LibreOffice": "brew install --cask libreoffice",
+               "poppler": "brew install poppler"},
+    "linux": {"LibreOffice": "sudo apt install libreoffice-writer   "
+                             "(Fedora: sudo dnf install libreoffice-writer)",
+              "poppler": "sudo apt install poppler-utils   "
+                         "(Fedora: sudo dnf install poppler-utils)"},
+    "win32": {"LibreOffice": "winget install --id TheDocumentFoundation.LibreOffice --exact",
+              "poppler": "winget install --id oschwartz10612.Poppler --exact   "
+                         "(then open a new terminal; if doctor still cannot find "
+                         "pdfinfo, add Poppler's bin folder to PATH)"},
+}
+
+
+def install_hint(tool):
+    hints = INSTALL_HINTS.get(sys.platform) or INSTALL_HINTS.get(
+        "linux" if sys.platform.startswith("linux") else "", {})
+    return hints.get(tool)
 
 
 def cmd_doctor(args):
@@ -2333,6 +2747,12 @@ def cmd_doctor(args):
         print("\nOK - check, budget, and fill can verify page count, bottom "
               "margin, and parse recoverability.")
         return
+    wanted = ([] if soffice else ["LibreOffice"]) + (
+        [] if all(shutil.which(t) for t in POPPLER_TOOLS) else ["poppler"])
+    for tool in wanted:
+        hint = install_hint(tool)
+        if hint:
+            print("install %s: %s" % (tool, hint))
     print("\nIncomplete.\nmatch, extract, apply, and the voice lint still work. "
           "check, budget, and fill fail rather than pass unmeasured; "
           "--no-page-check accepts an unverified result.")
@@ -2346,6 +2766,16 @@ def main():
 
     p = sub.add_parser("normalize"); p.add_argument("input")
     p.add_argument("-o", "--output", required=True); p.set_defaults(fn=cmd_normalize)
+
+    p = sub.add_parser("import"); p.add_argument("input")
+    p.add_argument("-o", "--output", default="canon_resume.odt")
+    p.set_defaults(fn=cmd_import)
+
+    p = sub.add_parser("init-map"); p.add_argument("--map", default="pii.txt")
+    p.set_defaults(fn=cmd_init_map)
+
+    p = sub.add_parser("tokenize"); p.add_argument("resume")
+    p.add_argument("--map", default="pii.txt"); p.set_defaults(fn=cmd_tokenize)
 
     p = sub.add_parser("shape"); p.add_argument("resume")
     p.add_argument("--exit-code", action="store_true"); p.set_defaults(fn=cmd_shape)
@@ -2377,6 +2807,8 @@ def main():
     p = sub.add_parser("fill"); p.add_argument("resume")
     p.add_argument("-o", "--output", required=True)
     p.add_argument("--no-page-check", action="store_true")
+    p.add_argument("--canon", default="canon_resume.odt",
+                   help="the resume whose page count the filled one may not exceed")
     p.add_argument("--map", default="pii.txt"); p.set_defaults(fn=cmd_fill)
 
     p = sub.add_parser("split"); p.add_argument("inbox", nargs="?",
