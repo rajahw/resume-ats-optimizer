@@ -86,6 +86,32 @@ class TestDeniesFilledResumes:
         """lstrip('./') strips characters, not a prefix: ./.private -> private."""
         assert bash("cat .privatenotes/scratch.txt") is None
 
+    @pytest.mark.parametrize("name", ["ada_resume.pdf", "ADA_RESUME.PDF", "resume.odt",
+                                      "Someone_FILLED.odt", "PRIVATE/resume.odt"])
+    def test_case_variants_are_denied_on_every_platform(self, name):
+        """Windows and macOS open Ada_Resume.pdf for any casing of its name."""
+        assert bash("cat " + name) is not None
+        assert tool("Read", file_path=name) is not None
+
+    @pytest.mark.parametrize("name", ["private/canon_resume.odt", "canon_resume_filled.odt"])
+    def test_canon_exemption_does_not_leak(self, name):
+        assert bash("cat " + name) is not None
+
+
+class TestCanonIsNeverAFilledResume:
+    """canon_resume.* differs from *_Resume.* only in case; it must stay readable."""
+
+    @pytest.mark.parametrize("name", ["canon_resume.odt", "canon_resume.pdf",
+                                      "CANON_RESUME.ODT", "./canon_resume.odt",
+                                      "dir/canon_resume.odt"])
+    @pytest.mark.parametrize("cmd", ["cat {}", "unzip -o {} -d x"])
+    def test_readers_are_allowed(self, cmd, name):
+        assert bash(cmd.format(name)) is None
+
+    @pytest.mark.parametrize("name", ["canon_resume.odt", "dir/canon_resume.odt"])
+    def test_read_tool_is_allowed(self, name):
+        assert tool("Read", file_path=name) is None
+
 
 class TestAllowsLegitimateWork:
     """False positives would make the tool unusable; pin the common cases."""

@@ -71,6 +71,13 @@ PROTECTED_GLOBS = ("*_Resume.*", "Resume.*", "*_filled.*", "*-filled.*", "*_fina
                    "*_submitted.*", "*-submitted.*",
                    "private", "private/*", "*/private/*")
 
+# Matching ignores case on every platform: Windows and macOS filesystems do, so
+# `cat ada_resume.pdf` opens Ada_Resume.pdf there. That makes the tokenized canon,
+# canon_resume.*, look like a filled `*_Resume.*` - it is exempt from that glob
+# alone, so private/canon_resume.odt (the untokenized original) stays blocked.
+CANON_STEM = "canon_resume"
+CANON_COLLIDES_WITH = "*_Resume.*"
+
 # Commands that print file contents. `ls` and `stat` are absent deliberately -
 # metadata is not content, and blocking them makes the agent blind for no gain.
 READER_COMMANDS = {
@@ -186,8 +193,14 @@ def hits_protected(value):
         if norm.startswith("./"):
             norm = norm[2:]
         base = os.path.basename(candidate.rstrip("/"))
+        # fnmatch.fnmatch folds case only on Windows; lowercase both sides instead.
+        norm, base = norm.lower(), base.lower()
+        is_canon = os.path.splitext(base)[0] == CANON_STEM
         for pat in PROTECTED_GLOBS:
-            if fnmatch.fnmatch(norm, pat) or fnmatch.fnmatch(base, pat):
+            if is_canon and pat == CANON_COLLIDES_WITH:
+                continue
+            pat = pat.lower()
+            if fnmatch.fnmatchcase(norm, pat) or fnmatch.fnmatchcase(base, pat):
                 return True
     return False
 
