@@ -8,11 +8,7 @@ The guard is a guardrail against accidental access, not a sandbox. The
 cannot close, so nobody mistakes them for coverage.
 """
 
-import os
-import sys
-import unittest
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 
 import helpers
 
@@ -30,129 +26,122 @@ def tool(name, **kwargs):
     return g.decide({"tool_name": name, "tool_input": kwargs})
 
 
-class TestDeniesTheMap(unittest.TestCase):
-    def test_plain_reads(self):
-        for cmd in ("cat " + MAP,
-                    "head -c 50 ./" + MAP,
-                    "grep Name " + MAP,
-                    "python3 -c \"open('" + MAP + "')\"",
-                    "cp " + MAP + " /tmp/x"):
-            with self.subTest(cmd=cmd):
-                self.assertIsNotNone(bash(cmd))
+class TestDeniesTheMap:
+    @pytest.mark.parametrize("cmd", [
+        "cat " + MAP,
+        "head -c 50 ./" + MAP,
+        "grep Name " + MAP,
+        "python3 -c \"open('" + MAP + "')\"",
+        "cp " + MAP + " /tmp/x",
+    ])
+    def test_plain_reads(self, cmd):
+        assert bash(cmd) is not None
 
-    def test_redirection_with_and_without_a_space(self):
+    @pytest.mark.parametrize("cmd", ["cat < " + MAP, "cat <" + MAP, "cat<" + MAP])
+    def test_redirection_with_and_without_a_space(self, cmd):
         """`<` was missing from the separator class, so the no-space form passed."""
-        for cmd in ("cat < " + MAP, "cat <" + MAP, "cat<" + MAP):
-            with self.subTest(cmd=cmd):
-                self.assertIsNotNone(bash(cmd), "redirect form slipped past")
+        assert bash(cmd) is not None, "redirect form slipped past"
 
-    def test_command_substitution_forms(self):
-        for cmd in ("echo $(<" + MAP + ")", "echo `cat " + MAP + "`"):
-            with self.subTest(cmd=cmd):
-                self.assertIsNotNone(bash(cmd))
+    @pytest.mark.parametrize("cmd", ["echo $(<" + MAP + ")", "echo `cat " + MAP + "`"])
+    def test_command_substitution_forms(self, cmd):
+        assert bash(cmd) is not None
 
-    def test_variants_of_the_name(self):
-        for cmd in ("cat pii-old.txt", "cat pii.bak", "cat backup/pii.txt"):
-            with self.subTest(cmd=cmd):
-                self.assertIsNotNone(bash(cmd))
+    @pytest.mark.parametrize("cmd", ["cat pii-old.txt", "cat pii.bak", "cat backup/pii.txt"])
+    def test_variants_of_the_name(self, cmd):
+        assert bash(cmd) is not None
 
-    def test_path_fields_on_other_tools(self):
-        self.assertIsNotNone(tool("Read", file_path=MAP))
-        self.assertIsNotNone(tool("Edit", file_path=MAP))
-        self.assertIsNotNone(tool("Write", file_path=MAP))
+    @pytest.mark.parametrize("name", ["Read", "Edit", "Write"])
+    def test_path_fields_on_other_tools(self, name):
+        assert tool(name, file_path=MAP) is not None
 
 
-class TestDeniesFilledResumes(unittest.TestCase):
+class TestDeniesFilledResumes:
     def test_direct_read(self):
-        self.assertIsNotNone(bash("cat " + FILLED))
+        assert bash("cat " + FILLED) is not None
 
-    def test_through_a_wrapper(self):
+    @pytest.mark.parametrize("prefix", ["timeout 5 ", "stdbuf -o0 ", "nice ", "env "])
+    def test_through_a_wrapper(self, prefix):
         """First-token-only reader detection let `timeout` through."""
-        for prefix in ("timeout 5 ", "stdbuf -o0 ", "nice ", "env "):
-            with self.subTest(prefix=prefix):
-                self.assertIsNotNone(bash(prefix + "cat " + FILLED))
+        assert bash(prefix + "cat " + FILLED) is not None
 
-    def test_other_gitignored_filled_shapes(self):
+    @pytest.mark.parametrize("name", ["Someone_Resume_final.odt",
+                                      "Someone_Resume_submitted.odt"])
+    def test_other_gitignored_filled_shapes(self, name):
         """.gitignore also treats _final and _submitted as filled outputs."""
-        for name in ("Someone_Resume_final.odt", "Someone_Resume_submitted.odt"):
-            with self.subTest(name=name):
-                self.assertIsNotNone(bash("cat " + name))
+        assert bash("cat " + name) is not None
 
-    def test_filled_resume_is_the_plain_resume_name(self):
-        for name in ("Someone_Resume.odt", "Resume.odt"):
-            with self.subTest(name=name):
-                self.assertIsNotNone(bash("cat " + name))
-                self.assertIsNotNone(tool("Read", file_path=name))
+    @pytest.mark.parametrize("name", ["Someone_Resume.odt", "Resume.odt"])
+    def test_filled_resume_is_the_plain_resume_name(self, name):
+        assert bash("cat " + name) is not None
+        assert tool("Read", file_path=name) is not None
 
     def test_tokenized_resume_is_readable(self):
-        self.assertIsNone(bash("cat Someone_Resume_tokenized.odt"))
+        assert bash("cat Someone_Resume_tokenized.odt") is None
 
     def test_private_directory(self):
-        self.assertIsNotNone(bash("cat private/resume.odt"))
-        self.assertIsNotNone(tool("Read", file_path="private/resume.odt"))
+        assert bash("cat private/resume.odt") is not None
+        assert tool("Read", file_path="private/resume.odt") is not None
 
     def test_a_dotfile_directory_is_not_confused_for_private(self):
         """lstrip('./') strips characters, not a prefix: ./.private -> private."""
-        self.assertIsNone(bash("cat .privatenotes/scratch.txt"))
+        assert bash("cat .privatenotes/scratch.txt") is None
 
 
-class TestAllowsLegitimateWork(unittest.TestCase):
+class TestAllowsLegitimateWork:
     """False positives would make the tool unusable; pin the common cases."""
 
-    def test_ordinary_commands(self):
-        for cmd in ("ls -la",
-                    "git status",
-                    "python3 -m unittest discover tests",
-                    "cat README.md",
-                    "grep -n TOKEN_RE odt_text.py",
-                    "unzip -o canon_resume.odt -d x"):
-            with self.subTest(cmd=cmd):
-                self.assertIsNone(bash(cmd), "blocked legitimate work")
+    @pytest.mark.parametrize("cmd", [
+        "ls -la",
+        "git status",
+        "python3 -m pytest",
+        "cat README.md",
+        "grep -n TOKEN_RE odt_text.py",
+        "unzip -o canon_resume.odt -d x",
+    ])
+    def test_ordinary_commands(self, cmd):
+        assert bash(cmd) is None, "blocked legitimate work"
 
     def test_fill_is_allowed_to_run(self):
         """fill reads the map itself; it must not be mistaken for a reader."""
         cmd = "python3 odt_text.py fill canon_resume.odt -o Out_Resume_filled.odt"
-        self.assertIsNone(bash(cmd))
+        assert bash(cmd) is None
 
-    def test_fill_through_a_script_variable_is_allowed(self):
+    @pytest.mark.parametrize("cmd", [
+        "S=odt_text.py; python3 $S fill a.odt -o d/Out_Resume.pdf",
+        "S=odt_text.py d=app; python3 ${S} fill $d/a.odt -o $d/Out_Resume.pdf",
+        'S="odt_text.py"; python3 $S fill a.odt -o x/Out_Resume.pdf',
+    ])
+    def test_fill_through_a_script_variable_is_allowed(self, cmd):
         """`S=odt_text.py; python3 $S fill` was judged a reader before variables were expanded."""
-        for cmd in ("S=odt_text.py; python3 $S fill a.odt -o d/Out_Resume.pdf",
-                    "S=odt_text.py d=app; python3 ${S} fill $d/a.odt -o $d/Out_Resume.pdf",
-                    'S="odt_text.py"; python3 $S fill a.odt -o x/Out_Resume.pdf'):
-            with self.subTest(cmd=cmd):
-                self.assertIsNone(bash(cmd))
+        assert bash(cmd) is None
 
     def test_assigned_variable_naming_the_map_is_denied(self):
-        self.assertEqual(bash("p=pii; cat $p.txt"), g.PII_REASON)
+        assert bash("p=pii; cat $p.txt") == g.PII_REASON
 
     def test_assigned_variable_naming_a_filled_resume_is_denied(self):
-        self.assertEqual(bash("f=Out_Resume.pdf; cat $f"), g.FILLED_REASON)
+        assert bash("f=Out_Resume.pdf; cat $f") == g.FILLED_REASON
 
     def test_writing_a_filled_output_is_allowed(self):
-        self.assertIsNone(tool("Write", file_path="notes.md"))
+        assert tool("Write", file_path="notes.md") is None
 
     def test_prose_mentioning_the_map_is_allowed(self):
         """Docs have to be able to describe the map without tripping the guard."""
-        self.assertIsNone(tool("Write", file_path="README.md",
-                               content="Write values into pii.txt, one per line."))
+        assert tool("Write", file_path="README.md",
+                    content="Write values into pii.txt, one per line.") is None
 
 
-class TestFailsClosed(unittest.TestCase):
-    def test_unparseable_payload_is_denied(self):
-        self.assertIsNotNone(g.decide("not a dict"))
-
-    def test_non_dict_tool_input_is_denied(self):
-        self.assertIsNotNone(g.decide({"tool_name": "Bash", "tool_input": "oops"}))
-
-    def test_non_string_command_is_denied(self):
-        self.assertIsNotNone(
-            g.decide({"tool_name": "Bash", "tool_input": {"command": 42}}))
-
-    def test_missing_fields_are_denied(self):
-        self.assertIsNotNone(g.decide({}))
+class TestFailsClosed:
+    @pytest.mark.parametrize("payload", [
+        "not a dict",
+        {"tool_name": "Bash", "tool_input": "oops"},
+        {"tool_name": "Bash", "tool_input": {"command": 42}},
+        {},
+    ], ids=["unparseable", "non-dict-input", "non-string-command", "missing-fields"])
+    def test_malformed_payload_is_denied(self, payload):
+        assert g.decide(payload) is not None
 
 
-class TestAcknowledgedGaps(unittest.TestCase):
+class TestAcknowledgedGaps:
     """Limits of a string matcher, pinned so they are not mistaken for coverage.
 
     Each of these reaches the map. They are documented in the guard's docstring
@@ -160,12 +149,8 @@ class TestAcknowledgedGaps(unittest.TestCase):
     """
 
     def test_directory_wide_sweep_is_not_caught(self):
-        self.assertIsNone(bash("grep -r . ."))
+        assert bash("grep -r . .") is None
 
     def test_variable_set_outside_the_command_is_not_caught(self):
         """Only assignments visible in the same command are expanded."""
-        self.assertIsNone(bash("cat $MAPFILE"))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert bash("cat $MAPFILE") is None
