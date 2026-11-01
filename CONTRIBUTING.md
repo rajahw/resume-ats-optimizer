@@ -8,8 +8,11 @@ to others, including commercially, as part of this project.
 Before opening a pull request, run the tests:
 
 ```bash
-python3 -m unittest discover tests
+python3 -m pip install -r requirements.txt
+python3 -m pytest
 ```
+
+GitHub Actions runs the same suite on every pull request, on Linux, macOS, and Windows.
 
 Never include a real resume, a filled `pii.txt`, or a job posting's text in an issue,
 pull request, or test fixture. Every fixture in `tests/` is synthetic.

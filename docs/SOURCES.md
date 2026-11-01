@@ -68,6 +68,16 @@ official documentation describes. Observed behavior can change without notice.
 | Google Docs exports Word via File → Download → Microsoft Word (.docx) | Secondary | [Digital Citizen](https://www.digitalcitizen.life/how-to-download-a-google-doc-as-a-word-document/), [UW-Stout KB](https://kb.uwstout.edu/101534); Google's help page needs JavaScript and couldn't be quoted |
 | Aptos (Microsoft 365's default font since 2023) and Calibri are proprietary Microsoft fonts | Secondary | [TechSpot](https://www.techspot.com/news/99410-goodbye-calibri-hello-aptos-new-default-font-microsoft.html) |
 
+## Tests and CI
+
+| Claim | Status | Source |
+|---|---|---|
+| pytest 9.2.0 requires Python 3.10+ | Primary | [PyPI: pytest 9.2.0](https://pypi.org/project/pytest/9.2.0/), `requires_python` |
+| GitHub Actions only runs workflows from `.github/workflows/` | Primary | [Workflow syntax](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions) |
+| Dependabot version updates need a `.github/dependabot.yml`; `pip` and `github-actions` are supported ecosystems | Primary | [Dependabot options reference](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference) |
+| Current majors: `actions/checkout` v7, `actions/setup-python` v7; Python 3.15 is available on hosted runners | Primary | [checkout releases](https://github.com/actions/checkout/releases), [setup-python releases](https://github.com/actions/setup-python/releases), [python-versions manifest](https://github.com/actions/python-versions/blob/main/versions-manifest.json) |
+| CI LibreOffice packages: Ubuntu `libreoffice-writer-nogui` (24.04, 26.04), Chocolatey `libreoffice-fresh` | Primary | [Ubuntu packages](https://packages.ubuntu.com/search?keywords=libreoffice-writer-nogui&searchon=names&exact=1), [Chocolatey](https://community.chocolatey.org/packages/libreoffice-fresh) |
+
 ## Documents and job postings
 
 | Claim | Status | Source |

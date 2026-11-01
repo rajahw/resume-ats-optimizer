@@ -23,6 +23,9 @@ hooks/                    pre-commit guard against committing real PII, the
 .claude/settings.json     wires that hook up - committed, so it travels with the clone
 .gitattributes            forces LF on the scripts, so a Windows clone does not
                           rewrite the shebangs to CRLF and break them
+tests/                    the pytest suite; shared fixtures in conftest.py
+requirements.txt          test-only dependencies (pytest), pinned
+.github/                  the CI workflow and Dependabot config
 
 canon_resume.odt          your resume - local only, gitignored, not shipped here
 pii.txt                   real values for the [Token]s - local only, gitignored,
@@ -293,13 +296,25 @@ for coverage.
 ## Tests
 
 ```bash
-python3 -m unittest discover tests
+python3 -m pip install -r requirements.txt
+python3 -m pytest
 ```
 
-Standard library only — no pytest, matching the rest of the tool. Every fixture is
-synthetic: the suite builds its own `.odt` documents and its own all-fake identity maps,
-and never reads your canon, your `pii.txt`, or any filled output. That is deliberate, so
-an agent forbidden from touching those files can still run the suite.
+pytest is the only test dependency, pinned in `requirements.txt`. The tool itself
+(`odt_text.py` and the hooks) stays standard library only. Shared fixtures live in
+`tests/conftest.py`: `ws` (a scratch directory with the CLI pointed at it),
+`render_cache`, and `repo` (a throwaway git repo).
+
+Every fixture is synthetic: the suite builds its own `.odt` documents and its own all-fake
+identity maps, and never reads your canon, your `pii.txt`, or any filled output. That is
+deliberate, so an agent forbidden from touching those files can still run the suite.
+
+**CI.** `.github/workflows/tests.yml` runs the suite on every push and pull request to
+`main`, on Linux, macOS, and Windows with Python 3.10 and 3.15. LibreOffice is installed
+on every runner, so the real `.docx` import test runs instead of skipping. pytest needs
+Python 3.10+, so CI cannot exercise the tool's 3.7 floor; that floor applies to the tool,
+not the suite. Dependabot (`.github/dependabot.yml`) opens weekly pull requests that bump
+the pytest pin and the action versions.
 
 ## Design notes
 
