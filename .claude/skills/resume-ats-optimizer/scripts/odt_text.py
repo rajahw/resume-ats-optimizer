@@ -92,6 +92,25 @@ JD_STOP_HEADING = re.compile(
     r"|what we offer)", re.I)
 JD_STOP_HEADING_WORDS = 6
 
+# A section heading is a short line - at most JD_STOP_HEADING_WORDS words, no
+# closing period, not itself a bullet - followed by a bullet or a paragraph-length
+# line. Plain text carries no bold, so shape is all there is to go on. Its words
+# set the weight of what follows: any section word gives 2, a requirement word 3,
+# a preference word holds it at 2. A heading with no section word ("About
+# Costco") drops to 1 and is listed for a human read. Recognizing a heading only
+# reorders and un-skips terms, never drops them, so these lean wide. A heading
+# phrased as a question ("What Are the Requirements You Must Meet?") runs longer,
+# so it gets its own limit, and its words are still read as terms.
+JD_QUESTION_WORDS = 12
+JD_BULLET = re.compile(r"^\s*([-•*–·]\s*|\d+[.)]\s)")
+JD_HEAD_WORDS = re.compile(
+    r"require|qualif|responsibilit|recommended|preferred|\bskills\b|what you"
+    r"|you have|you bring|the role|nice to have|bonus|must have|minimum|\bbasic\b"
+    r"|^\W*plus\b", re.I)
+JD_HEAD_WEAK = re.compile(r"preferred|recommended|nice to have|bonus|^\W*plus\b", re.I)
+JD_HEAD_STRONG = re.compile(r"require|minimum|\bbasic\b|\bmust\b", re.I)
+JD_HEAD_BARE = re.compile(r"^\W*(qualifications?|you have|what you.?(ll)? need)\W*$", re.I)
+
 STOPWORDS = set("""
 a an and are as at be been being by for from has have in into is it its of on or
 that the to was were will with you your our we us they their this these those
@@ -742,27 +761,56 @@ def cmd_shape(args):
 
 # ---------------------------------------------------------------- match
 
-def jd_terms(jd):
-    """Extract candidate keywords from a job description, weighted by section."""
+def jd_heading(lines, i):
+    """Weight that line i sets if it is a section heading, else None."""
+    line = lines[i].strip()
+    words = line.split()
+    limit = JD_QUESTION_WORDS if line.endswith("?") else JD_STOP_HEADING_WORDS
+    if (not words or len(words) > limit or line.endswith(".")
+            or JD_BULLET.match(line) or line == TRIM_MARKER):
+        return None
+    nxt = next((l.strip() for l in lines[i + 1:] if l.strip()), "")
+    if not (JD_BULLET.match(nxt) or len(nxt.split()) > JD_STOP_HEADING_WORDS):
+        return None
+    head = line.split(":", 1)[0]
+    if not JD_HEAD_WORDS.search(head):
+        return 1
+    if JD_HEAD_WEAK.search(head):
+        return 2
+    if JD_HEAD_STRONG.search(head) or JD_HEAD_BARE.match(head):
+        return 3
+    return 2
+
+
+def jd_terms(jd, other=None):
+    """Extract candidate keywords from a job description, weighted by section.
+    Headings with no section word are appended to `other` when it is given."""
     lines = jd.splitlines()
     terms = {}
     weight = 1
     skip = False
-    for line in lines:
+    for i, line in enumerate(lines):
         low = line.lower()
         if JD_STOP_STRONG.search(low) or (
                 len(low.split()) <= JD_STOP_HEADING_WORDS and JD_STOP_HEADING.match(low)):
             skip = True
             continue
-        if re.match(r"^\s*(requirement|qualification|what you|must have|you have)", low):
-            skip, weight = False, 3
+        # split's eligibility lines: read for disqualifiers, never outranking
+        # requirements.
+        if line.strip() == TRIM_MARKER:
+            skip, weight = False, 1
             continue
-        if re.match(r"^\s*(preferred|nice to have|bonus|plus)", low):
-            skip, weight = False, 2
-            continue
-        if re.match(r"^\s*(responsibilit|what you.ll do|the role|about the role)", low):
-            skip, weight = False, 2
-            continue
+        head = jd_heading(lines, i)
+        if head is not None:
+            skip, weight = False, head
+            if head == 1 and other is not None:
+                other.append(line.strip())
+            # "Requirements: Java, SQL" carries terms after the colon; a
+            # question heading can carry them anywhere.
+            if not line.strip().endswith("?"):
+                line = line.split(":", 1)[1] if ":" in line else ""
+            if not line.strip():
+                continue
         if skip:
             continue
         line = re.sub(r"^[\s\-•*\d.]+", "", line)
@@ -829,15 +877,18 @@ def cmd_match(args):
     content = read_content(args.resume)
     text = resume_text(content)
     jd = open(args.jd, encoding="utf-8").read()
-    terms = jd_terms(jd)
+    other = []
+    terms = jd_terms(jd, other)
     exact, near, missing = classify(terms, text)
     # Only the interesting rows are surfaced. No score, ratio, or total.
     near = near[: args.limit]
     missing = missing[: args.limit]
+    other = other[: args.limit]
     if args.json:
         print(json.dumps({
             "near": [{"term": t, "weight": w, "resume_has": h} for t, w, h in near],
             "missing": [{"term": t, "weight": w} for t, w in missing],
+            "other_headings": other,
         }, indent=2))
     else:
         if near:
@@ -850,6 +901,10 @@ def cmd_match(args):
                 print("  %s" % t)
         if not near and not missing:
             print("No actionable gaps. Canon already covers this posting.")
+        if other:
+            print("\nOTHER HEADINGS (no section words - read what is under them):")
+            for h in other:
+                print("  %s" % h)
     if args.exit_code:
         sys.exit(0 if not near and not missing else 1)
 

@@ -332,7 +332,9 @@ For each application at stage `new`:
    only near-miss and missing terms, and emits no score.
 3. **Sanity-check the rows.** The script misses context a human catches (a requirement
    phrased as a responsibility, an industry-specific sense of a word). Add what it
-   missed, drop false positives. Then apply the ledger: a `yes` term is usable as
+   missed, drop false positives. `OTHER HEADINGS` lists headings with no section word;
+   their text ranks lowest, so read under them for requirements the rows missed.
+   Then apply the ledger: a `yes` term is usable as
    confirmed, a `no` term is dropped. **Scan the posting for disqualifiers.**
 4. **Draft the proposal** within the edit budget (Phase 3), sized against step 7's
    `budget` numbers: before/after pairs for rewordings, candidate removals quoted in

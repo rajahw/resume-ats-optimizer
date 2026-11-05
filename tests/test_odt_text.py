@@ -424,6 +424,85 @@ class TestMatch:
         assert "dental coverage" not in terms
 
 
+class TestMatchHeadings:
+    PITCH = "About Costco\nWe are a family, employee centric atmosphere for everyone.\n"
+
+    @pytest.mark.parametrize("heading, weight", [
+        ("Required", 3),
+        ("Minimum Qualifications", 3),
+        ("Basic Qualifications", 3),
+        ("Qualifications:", 3),
+        ("You Have", 3),
+        ("What You'll Need", 3),
+        ("Recommended", 2),
+        ("Preferred Qualifications", 2),
+        ("Role Responsibilities", 2),
+        ("What You'll Do", 2),
+        ("Skills", 2),
+        ("About Costco", 1),
+    ])
+    def test_heading_weight(self, heading, weight):
+        assert m.jd_heading([heading, "- Kubernetes"], 0) == weight
+
+    @pytest.mark.parametrize("line", [
+        "Required to work on-site three days a week.",   # closing period: prose
+        "- Required Documents",                          # a bullet, not a heading
+        "Requirements are listed in the attached sheet for this role",  # 10 words
+    ])
+    def test_not_a_heading(self, line):
+        assert m.jd_heading([line, "- Kubernetes"], 0) is None
+
+    def test_question_heading_gets_a_longer_limit(self):
+        q = "What Are the Requirements You Must Meet?"         # 8 words
+        assert m.jd_heading([q, "- Kubernetes"], 0) == 3
+        long_q = ("Are you ready to make an impact on millions of patients "
+                  "every single day?")                          # 14 words
+        assert m.jd_heading([long_q, "- Kubernetes"], 0) is None
+
+    def test_question_heading_words_are_still_terms(self):
+        terms = m.jd_terms("Do you have experience with Python or Kotlin?\n- Terraform\n")
+        assert terms["kotlin"] == 2      # "you have" promotes only when bare
+
+    def test_trim_marker_is_not_a_heading_and_ranks_lowest(self):
+        other = []
+        terms = m.jd_terms("Required\n- Kubernetes\n" + m.TRIM_MARKER
+                           + "\n- Visa sponsorship\n", other)
+        assert other == []
+        assert terms["kubernetes"] == 3
+        assert terms["visa sponsorship"] == 1
+
+    def test_needs_a_bullet_or_paragraph_after(self):
+        assert m.jd_heading(["SQL", "Azure DevOps"], 0) is None
+
+    def test_unrecognized_heading_no_longer_ties_with_pitch(self):
+        terms = m.jd_terms(self.PITCH + "Required\n- Ranorex\n")
+        assert terms["ranorex"] == 3
+        assert terms["family"] == 1
+
+    def test_shape_only_heading_is_listed_and_weighted_1(self):
+        other = []
+        terms = m.jd_terms("Required\n- Ranorex\n" + self.PITCH, other)
+        assert other == ["About Costco"]
+        assert terms["family"] == 1
+
+    def test_terms_after_a_heading_colon_are_kept(self):
+        terms = m.jd_terms("Requirements: Kubernetes\n- Terraform\n")
+        assert terms["kubernetes"] == 3
+
+    def test_any_heading_ends_a_stop_skip(self):
+        terms = m.jd_terms("Benefits\n- Dental coverage\nOur Stack\n- Kubernetes\n")
+        assert "dental coverage" not in terms
+        assert terms["kubernetes"] == 1
+
+    def test_match_prints_other_headings(self, ws):
+        jd = ws.path("posting.txt")
+        with open(jd, "w", encoding="utf-8") as fh:
+            fh.write(self.PITCH + "Required\n- Kubernetes\n")
+        res = ws.run_cli("match", ws.odt(), jd)
+        assert "OTHER HEADINGS" in res.stdout
+        assert "About Costco" in res.stdout
+
+
 @pytest.mark.usefixtures("render_cache")
 class TestCanonGeometryCache:
     def report(self, subs=()):
