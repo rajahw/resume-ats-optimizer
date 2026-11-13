@@ -466,8 +466,19 @@ list.
    the most expensive in the run. It describes tokenized résumés and never contains a
    filled value.
 2. **Reply in chat** with only: how many applications are `filled` (ready to submit,
-   with their folders), anything `skipped`, and the "Needs you" list. Point at the
+   with their folders), the skipped table, and the "Needs you" list. Point at the
    summary for the rest.
+   **Skipped table, always shown when anything was skipped.** One row per `skipped`
+   application, as a markdown table with columns Company, Role, Why. The user uses it to
+   remove those postings from their own records, so it must be complete:
+   - Cover every `skipped` application dated the same day as this batch, from
+     `python3 $SCRIPT status` and each folder's `state.json`, not just this session's -
+     an earlier batch the same day counts. If the skipped ones span more than one batch,
+     group the rows by batch.
+   - Take Company and Role from the folder name or `posting.txt`, and Why from the
+     `--note` recorded on `stage ... skipped`. Never leave Why blank.
+   - For a duplicate, name the earlier application it duplicates, and say that one is the
+     original to keep - the user must remove only the skipped copy.
 3. **Offer canon write-back once**, if consultation surfaced something that belongs on
    the page permanently - list every such item from the whole batch in that one offer.
    Opt-in, never automatic. Most confirmed experience belongs in the ledger only.
